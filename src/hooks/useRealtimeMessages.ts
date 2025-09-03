@@ -1,9 +1,10 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase, Message } from '../lib/supabase';
 
 export function useRealtimeMessages(roomId: string) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
+  const channelRef = useRef<any>(null);
 
   const loadMessages = useCallback(async () => {
     try {
@@ -26,9 +27,20 @@ export function useRealtimeMessages(roomId: string) {
   useEffect(() => {
     loadMessages();
 
-    // Subscribe to new messages with immediate updates
-    const channel = supabase
-      .channel(`messages-${roomId}`)
+    // Clean up existing channel
+    if (channelRef.current) {
+      supabase.removeChannel(channelRef.current);
+    }
+
+    // Create new channel with unique name
+    const channelName = `room-messages-${roomId}-${Date.now()}`;
+    channelRef.current = supabase
+      .channel(channelName, {
+        config: {
+          broadcast: { self: true },
+          presence: { key: `user-${Date.now()}` }
+        }
+      })
       .on(
         'postgres_changes',
         {
@@ -40,43 +52,44 @@ export function useRealtimeMessages(roomId: string) {
         (payload) => {
           const newMessage = payload.new as Message;
           setMessages(prev => {
-            // Prevent duplicates
-            if (prev.some(msg => msg.id === newMessage.id)) {
-              return prev;
-            }
-            return [...prev, newMessage];
+            // Check if message already exists
+            const exists = prev.some(msg => msg.id === newMessage.id);
+            if (exists) return prev;
+            
+            // Remove any temp message with same content
+            const filtered = prev.filter(msg => 
+              !(msg.id.startsWith('temp-') && 
+                msg.content === newMessage.content && 
+                msg.user_name === newMessage.user_name)
+            );
+            
+            return [...filtered, newMessage].sort((a, b) => 
+              new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+            );
           });
         }
       )
-      .on(
-        'postgres_changes',
-        {
-          event: 'UPDATE',
-          schema: 'public',
-          table: 'messages',
-          filter: `room_id=eq.${roomId}`,
-        },
-        (payload) => {
-          const updatedMessage = payload.new as Message;
-          setMessages(prev => 
-            prev.map(msg => msg.id === updatedMessage.id ? updatedMessage : msg)
-          );
-        }
-      )
-      .subscribe();
+      .subscribe((status) => {
+        console.log('Subscription status:', status);
+      });
 
     return () => {
-      supabase.removeChannel(channel);
+      if (channelRef.current) {
+        supabase.removeChannel(channelRef.current);
+        channelRef.current = null;
+      }
     };
   }, [roomId, loadMessages]);
 
   const sendMessage = useCallback(async (content: string, userName: string) => {
     if (!content.trim()) return;
 
+    const tempId = `temp-${Date.now()}-${Math.random()}`;
+    
     try {
-      // Optimistic update
+      // Optimistic update with unique temp ID
       const tempMessage: Message = {
-        id: `temp-${Date.now()}`,
+        id: tempId,
         room_id: roomId,
         user_name: userName,
         content: content.trim(),
@@ -86,6 +99,7 @@ export function useRealtimeMessages(roomId: string) {
 
       setMessages(prev => [...prev, tempMessage]);
 
+      // Send to database
       const { data, error } = await supabase
         .from('messages')
         .insert([{
@@ -102,15 +116,15 @@ export function useRealtimeMessages(roomId: string) {
       // Replace temp message with real one
       setMessages(prev => 
         prev.map(msg => 
-          msg.id === tempMessage.id ? data : msg
+          msg.id === tempId ? data : msg
         )
       );
 
     } catch (error) {
       console.error('Error sending message:', error);
-      // Remove failed message
+      // Remove failed temp message
       setMessages(prev => 
-        prev.filter(msg => msg.id !== `temp-${Date.now()}`)
+        prev.filter(msg => msg.id !== tempId)
       );
     }
   }, [roomId]);

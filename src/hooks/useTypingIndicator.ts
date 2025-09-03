@@ -1,73 +1,73 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 
-interface TypingUser {
-  user_name: string;
-  last_typed: Date;
-}
-
 export function useTypingIndicator(roomId: string, userName: string) {
-  const [typingUsers, setTypingUsers] = useState<TypingUser[]>([]);
+  const [typingUsers, setTypingUsers] = useState<string[]>([]);
   const [isTyping, setIsTyping] = useState(false);
   const typingTimeoutRef = useRef<NodeJS.Timeout>();
-  const lastTypedRef = useRef<Date>();
+  const channelRef = useRef<any>(null);
 
-  // Broadcast typing status
-  const broadcastTyping = useCallback(async (typing: boolean) => {
-    if (!userName) return;
+  const updateTypingStatus = useCallback(async (typing: boolean) => {
+    if (!userName || !channelRef.current) return;
 
     try {
-      const channel = supabase.channel(`typing-${roomId}`);
-      await channel.send({
+      await channelRef.current.send({
         type: 'broadcast',
         event: 'typing',
         payload: {
           user_name: userName,
           is_typing: typing,
-          timestamp: new Date().toISOString()
+          timestamp: Date.now()
         }
       });
     } catch (error) {
-      console.error('Error broadcasting typing:', error);
+      console.error('Error updating typing status:', error);
     }
-  }, [roomId, userName]);
+  }, [userName]);
 
-  // Handle typing start
   const startTyping = useCallback(() => {
     if (isTyping) return;
     
     setIsTyping(true);
-    broadcastTyping(true);
-    lastTypedRef.current = new Date();
+    updateTypingStatus(true);
 
     // Clear existing timeout
     if (typingTimeoutRef.current) {
       clearTimeout(typingTimeoutRef.current);
     }
 
-    // Stop typing after 3 seconds of inactivity
+    // Stop typing after 2 seconds of inactivity
     typingTimeoutRef.current = setTimeout(() => {
       setIsTyping(false);
-      broadcastTyping(false);
-    }, 3000);
-  }, [isTyping, broadcastTyping]);
+      updateTypingStatus(false);
+    }, 2000);
+  }, [isTyping, updateTypingStatus]);
 
-  // Handle typing stop
   const stopTyping = useCallback(() => {
     if (!isTyping) return;
     
     setIsTyping(false);
-    broadcastTyping(false);
+    updateTypingStatus(false);
     
     if (typingTimeoutRef.current) {
       clearTimeout(typingTimeoutRef.current);
     }
-  }, [isTyping, broadcastTyping]);
+  }, [isTyping, updateTypingStatus]);
 
   useEffect(() => {
-    // Subscribe to typing indicators
-    const channel = supabase
-      .channel(`typing-${roomId}`)
+    // Clean up existing channel
+    if (channelRef.current) {
+      supabase.removeChannel(channelRef.current);
+    }
+
+    // Create new channel
+    const channelName = `typing-${roomId}-${Date.now()}`;
+    channelRef.current = supabase
+      .channel(channelName, {
+        config: {
+          broadcast: { self: false }
+        }
+      })
       .on('broadcast', { event: 'typing' }, (payload) => {
         const { user_name, is_typing, timestamp } = payload.payload;
         
@@ -75,37 +75,37 @@ export function useTypingIndicator(roomId: string, userName: string) {
         if (user_name === userName) return;
 
         setTypingUsers(prev => {
-          const filtered = prev.filter(user => user.user_name !== user_name);
+          const filtered = prev.filter(user => user !== user_name);
           
           if (is_typing) {
-            return [...filtered, { user_name, last_typed: new Date(timestamp) }];
+            return [...filtered, user_name];
           }
           
           return filtered;
         });
+
+        // Auto-remove typing indicator after 3 seconds
+        if (is_typing) {
+          setTimeout(() => {
+            setTypingUsers(prev => prev.filter(user => user !== user_name));
+          }, 3000);
+        }
       })
       .subscribe();
 
-    // Clean up old typing indicators
-    const cleanupInterval = setInterval(() => {
-      setTypingUsers(prev => 
-        prev.filter(user => 
-          Date.now() - user.last_typed.getTime() < 5000
-        )
-      );
-    }, 1000);
-
     return () => {
-      supabase.removeChannel(channel);
-      clearInterval(cleanupInterval);
+      if (channelRef.current) {
+        supabase.removeChannel(channelRef.current);
+        channelRef.current = null;
+      }
       if (typingTimeoutRef.current) {
         clearTimeout(typingTimeoutRef.current);
       }
     };
-  }, [roomId, userName]);
+  }, [roomId, userName, updateTypingStatus]);
 
   return {
-    typingUsers: typingUsers.map(user => user.user_name),
+    typingUsers,
     startTyping,
     stopTyping
   };
