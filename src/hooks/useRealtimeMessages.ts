@@ -5,6 +5,7 @@ export function useRealtimeMessages(roomId: string) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
   const channelRef = useRef<any>(null);
+  const lastMessageIdRef = useRef<string>('');
 
   const loadMessages = useCallback(async () => {
     try {
@@ -17,6 +18,11 @@ export function useRealtimeMessages(roomId: string) {
 
       if (error) throw error;
       setMessages(data || []);
+      
+      // Store last message ID to prevent duplicates
+      if (data && data.length > 0) {
+        lastMessageIdRef.current = data[data.length - 1].id;
+      }
     } catch (error) {
       console.error('Error loading messages:', error);
     } finally {
@@ -35,12 +41,7 @@ export function useRealtimeMessages(roomId: string) {
     // Create new channel with unique name
     const channelName = `room-messages-${roomId}-${Date.now()}`;
     channelRef.current = supabase
-      .channel(channelName, {
-        config: {
-          broadcast: { self: true },
-          presence: { key: `user-${Date.now()}` }
-        }
-      })
+      .channel(channelName)
       .on(
         'postgres_changes',
         {
@@ -51,27 +52,28 @@ export function useRealtimeMessages(roomId: string) {
         },
         (payload) => {
           const newMessage = payload.new as Message;
+          
+          // Prevent duplicate messages
+          if (newMessage.id === lastMessageIdRef.current) return;
+          
           setMessages(prev => {
             // Check if message already exists
             const exists = prev.some(msg => msg.id === newMessage.id);
             if (exists) return prev;
             
-            // Remove any temp message with same content
+            // Remove any temp message with same content and user
             const filtered = prev.filter(msg => 
               !(msg.id.startsWith('temp-') && 
                 msg.content === newMessage.content && 
                 msg.user_name === newMessage.user_name)
             );
             
-            return [...filtered, newMessage].sort((a, b) => 
-              new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-            );
+            lastMessageIdRef.current = newMessage.id;
+            return [...filtered, newMessage];
           });
         }
       )
-      .subscribe((status) => {
-        console.log('Subscription status:', status);
-      });
+      .subscribe();
 
     return () => {
       if (channelRef.current) {
@@ -87,7 +89,7 @@ export function useRealtimeMessages(roomId: string) {
     const tempId = `temp-${Date.now()}-${Math.random()}`;
     
     try {
-      // Optimistic update with unique temp ID
+      // Optimistic update
       const tempMessage: Message = {
         id: tempId,
         room_id: roomId,
@@ -100,25 +102,16 @@ export function useRealtimeMessages(roomId: string) {
       setMessages(prev => [...prev, tempMessage]);
 
       // Send to database
-      const { data, error } = await supabase
+      const { error } = await supabase
         .from('messages')
         .insert([{
           room_id: roomId,
           user_name: userName,
           content: content.trim(),
           message_type: 'text'
-        }])
-        .select()
-        .single();
+        }]);
 
       if (error) throw error;
-
-      // Replace temp message with real one
-      setMessages(prev => 
-        prev.map(msg => 
-          msg.id === tempId ? data : msg
-        )
-      );
 
     } catch (error) {
       console.error('Error sending message:', error);

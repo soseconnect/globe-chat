@@ -17,13 +17,14 @@ export function useTypingIndicator(roomId: string, userName: string) {
         payload: {
           user_name: userName,
           is_typing: typing,
+          room_id: roomId,
           timestamp: Date.now()
         }
       });
     } catch (error) {
       console.error('Error updating typing status:', error);
     }
-  }, [userName]);
+  }, [userName, roomId]);
 
   const startTyping = useCallback(() => {
     if (isTyping) return;
@@ -63,16 +64,12 @@ export function useTypingIndicator(roomId: string, userName: string) {
     // Create new channel
     const channelName = `typing-${roomId}-${Date.now()}`;
     channelRef.current = supabase
-      .channel(channelName, {
-        config: {
-          broadcast: { self: false }
-        }
-      })
+      .channel(channelName)
       .on('broadcast', { event: 'typing' }, (payload) => {
-        const { user_name, is_typing, timestamp } = payload.payload;
+        const { user_name, is_typing, room_id } = payload.payload;
         
-        // Ignore own typing
-        if (user_name === userName) return;
+        // Only process if it's for this room and not from current user
+        if (room_id !== roomId || user_name === userName) return;
 
         setTypingUsers(prev => {
           const filtered = prev.filter(user => user !== user_name);
@@ -102,7 +99,7 @@ export function useTypingIndicator(roomId: string, userName: string) {
         clearTimeout(typingTimeoutRef.current);
       }
     };
-  }, [roomId, userName, updateTypingStatus]);
+  }, [roomId, userName]);
 
   return {
     typingUsers,

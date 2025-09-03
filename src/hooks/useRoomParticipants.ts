@@ -26,17 +26,25 @@ export function useRoomParticipants(roomId: string, userName: string) {
     if (!userName) return;
 
     try {
-      const { error } = await supabase
+      // Check if already a participant
+      const { data: existing } = await supabase
         .from('room_participants')
-        .upsert([{
-          room_id: roomId,
-          user_name: userName,
-          is_admin: false
-        }], {
-          onConflict: 'room_id,user_name'
-        });
+        .select('*')
+        .eq('room_id', roomId)
+        .eq('user_name', userName)
+        .single();
 
-      if (error) throw error;
+      if (!existing) {
+        const { error } = await supabase
+          .from('room_participants')
+          .insert([{
+            room_id: roomId,
+            user_name: userName,
+            is_admin: false
+          }]);
+
+        if (error) throw error;
+      }
     } catch (error) {
       console.error('Error joining room:', error);
     }
@@ -76,6 +84,7 @@ export function useRoomParticipants(roomId: string, userName: string) {
       )
       .subscribe();
 
+    // Cleanup on unmount
     return () => {
       leaveRoom();
       supabase.removeChannel(channel);

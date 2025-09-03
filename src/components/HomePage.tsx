@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, MessageCircle, Users, RefreshCw as Refresh, Zap, Globe } from 'lucide-react';
+import { Plus, MessageCircle, Users, RefreshCw as Refresh, Zap, Globe, TrendingUp, Clock, Star } from 'lucide-react';
 import { supabase, Room } from '../lib/supabase';
 import { useUser } from '../contexts/UserContext';
 import { RoomCard } from './RoomCard';
@@ -21,9 +21,12 @@ export function HomePage() {
   const [passwordError, setPasswordError] = useState('');
   const [joiningRoom, setJoiningRoom] = useState(false);
   const [totalUsers, setTotalUsers] = useState(0);
+  const [totalMessages, setTotalMessages] = useState(0);
+  const [filter, setFilter] = useState<'all' | 'public' | 'password' | 'active'>('all');
 
   useEffect(() => {
     loadRooms();
+    loadStats();
     
     // Subscribe to room changes
     const channel = supabase
@@ -37,6 +40,7 @@ export function HomePage() {
         },
         () => {
           loadRooms();
+          loadStats();
         }
       )
       .on(
@@ -66,6 +70,7 @@ export function HomePage() {
       }
     }
   }, [roomId, rooms]);
+
   const loadRooms = async () => {
     try {
       // Load public and password-protected rooms with real participant counts
@@ -74,7 +79,7 @@ export function HomePage() {
         .select('*')
         .in('type', ['public', 'password'])
         .eq('is_active', true)
-        .order('created_at', { ascending: false });
+        .order('current_users', { ascending: false });
 
       if (error) throw error;
 
@@ -99,6 +104,18 @@ export function HomePage() {
       console.error('Error loading rooms:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadStats = async () => {
+    try {
+      const { count } = await supabase
+        .from('messages')
+        .select('*', { count: 'exact', head: true });
+      
+      setTotalMessages(count || 0);
+    } catch (error) {
+      console.error('Error loading stats:', error);
     }
   };
 
@@ -144,6 +161,12 @@ export function HomePage() {
     loadRooms(); // Refresh room list
   };
 
+  const filteredRooms = rooms.filter(room => {
+    if (filter === 'all') return true;
+    if (filter === 'active') return room.current_users > 0;
+    return room.type === filter;
+  });
+
   if (currentRoom) {
     return <ChatRoom room={currentRoom} onLeave={handleLeaveRoom} />;
   }
@@ -155,14 +178,14 @@ export function HomePage() {
         <div className="max-w-6xl mx-auto px-4 py-6">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-4">
-              <div className="w-12 h-12 bg-gradient-to-r from-blue-600 to-purple-600 rounded-xl flex items-center justify-center">
+              <div className="w-12 h-12 bg-gradient-to-r from-blue-600 to-purple-600 rounded-xl flex items-center justify-center shadow-lg">
                 <MessageCircle className="w-6 h-6 text-white" />
               </div>
               <div>
                 <h1 className="text-3xl font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
                   Global Chat
                 </h1>
-                <p className="text-gray-600">Connect with people worldwide</p>
+                <p className="text-gray-600">Connect with people worldwide in real-time</p>
               </div>
             </div>
 
@@ -176,7 +199,7 @@ export function HomePage() {
 
               <button
                 onClick={() => setShowCreateModal(true)}
-                className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors shadow-md hover:shadow-lg"
+                className="flex items-center gap-2 bg-gradient-to-r from-blue-600 to-purple-600 text-white px-4 py-2 rounded-lg hover:from-blue-700 hover:to-purple-700 transition-all duration-200 shadow-md hover:shadow-lg transform hover:scale-105"
               >
                 <Plus className="w-4 h-4" />
                 <span className="hidden sm:inline">Create Room</span>
@@ -195,9 +218,9 @@ export function HomePage() {
 
       {/* Main Content */}
       <div className="max-w-6xl mx-auto px-4 py-8">
-        {/* Stats */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-          <div className="bg-white/70 backdrop-blur-sm rounded-xl p-6 border shadow-sm">
+        {/* Enhanced Stats */}
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+          <div className="bg-white/70 backdrop-blur-sm rounded-xl p-6 border shadow-sm hover:shadow-md transition-shadow">
             <div className="flex items-center gap-4">
               <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center">
                 <MessageCircle className="w-6 h-6 text-blue-600" />
@@ -209,24 +232,34 @@ export function HomePage() {
             </div>
           </div>
 
-          <div className="bg-white/70 backdrop-blur-sm rounded-xl p-6 border shadow-sm">
+          <div className="bg-white/70 backdrop-blur-sm rounded-xl p-6 border shadow-sm hover:shadow-md transition-shadow">
             <div className="flex items-center gap-4">
               <div className="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center">
                 <Users className="w-6 h-6 text-green-600" />
               </div>
               <div>
-                <p className="text-2xl font-bold text-gray-900">
-                  {rooms.reduce((sum, room) => sum + room.current_users, 0)}
-                </p>
+                <p className="text-2xl font-bold text-gray-900">{totalUsers}</p>
                 <p className="text-gray-600">Online Users</p>
               </div>
             </div>
           </div>
 
-          <div className="bg-white/70 backdrop-blur-sm rounded-xl p-6 border shadow-sm">
+          <div className="bg-white/70 backdrop-blur-sm rounded-xl p-6 border shadow-sm hover:shadow-md transition-shadow">
             <div className="flex items-center gap-4">
               <div className="w-12 h-12 bg-purple-100 rounded-lg flex items-center justify-center">
-                <div className="w-6 h-6 bg-gradient-to-r from-purple-600 to-pink-600 rounded-full"></div>
+                <TrendingUp className="w-6 h-6 text-purple-600" />
+              </div>
+              <div>
+                <p className="text-2xl font-bold text-gray-900">{totalMessages}</p>
+                <p className="text-gray-600">Total Messages</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white/70 backdrop-blur-sm rounded-xl p-6 border shadow-sm hover:shadow-md transition-shadow">
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 bg-orange-100 rounded-lg flex items-center justify-center">
+                <Clock className="w-6 h-6 text-orange-600" />
               </div>
               <div>
                 <p className="text-2xl font-bold text-gray-900">24/7</p>
@@ -236,11 +269,38 @@ export function HomePage() {
           </div>
         </div>
 
+        {/* Filter Tabs */}
+        <div className="flex items-center gap-2 mb-6">
+          {[
+            { key: 'all', label: 'All Rooms', icon: Globe },
+            { key: 'active', label: 'Active', icon: Zap },
+            { key: 'public', label: 'Public', icon: Globe },
+            { key: 'password', label: 'Protected', icon: Star }
+          ].map(({ key, label, icon: Icon }) => (
+            <button
+              key={key}
+              onClick={() => setFilter(key as any)}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-all duration-200 ${
+                filter === key
+                  ? 'bg-blue-600 text-white shadow-md'
+                  : 'bg-white/70 text-gray-600 hover:bg-white hover:shadow-sm'
+              }`}
+            >
+              <Icon className="w-4 h-4" />
+              <span className="text-sm font-medium">{label}</span>
+            </button>
+          ))}
+        </div>
+
         {/* Room Grid */}
         <div className="mb-8">
           <div className="flex items-center justify-between mb-6">
-            <h2 className="text-2xl font-bold text-gray-900">Available Rooms</h2>
-            <p className="text-gray-600">{rooms.length} rooms available</p>
+            <h2 className="text-2xl font-bold text-gray-900">
+              {filter === 'all' ? 'All Rooms' : 
+               filter === 'active' ? 'Active Rooms' :
+               filter === 'public' ? 'Public Rooms' : 'Protected Rooms'}
+            </h2>
+            <p className="text-gray-600">{filteredRooms.length} rooms available</p>
           </div>
 
           {loading ? (
@@ -253,9 +313,9 @@ export function HomePage() {
                 </div>
               ))}
             </div>
-          ) : rooms.length > 0 ? (
+          ) : filteredRooms.length > 0 ? (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {rooms.map((room) => (
+              {filteredRooms.map((room) => (
                 <RoomCard
                   key={room.id}
                   room={room}
@@ -266,16 +326,59 @@ export function HomePage() {
           ) : (
             <div className="text-center py-12">
               <MessageCircle className="w-16 h-16 text-gray-400 mx-auto mb-4" />
-              <h3 className="text-xl font-semibold text-gray-900 mb-2">No rooms available</h3>
-              <p className="text-gray-600 mb-6">Be the first to create a chat room!</p>
+              <h3 className="text-xl font-semibold text-gray-900 mb-2">
+                {filter === 'all' ? 'No rooms available' : `No ${filter} rooms found`}
+              </h3>
+              <p className="text-gray-600 mb-6">
+                {filter === 'all' ? 'Be the first to create a chat room!' : 'Try a different filter or create a new room'}
+              </p>
               <button
                 onClick={() => setShowCreateModal(true)}
-                className="bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 transition-colors"
+                className="bg-gradient-to-r from-blue-600 to-purple-600 text-white px-6 py-3 rounded-lg hover:from-blue-700 hover:to-purple-700 transition-all duration-200 shadow-md hover:shadow-lg transform hover:scale-105"
               >
-                Create First Room
+                Create Room
               </button>
             </div>
           )}
+        </div>
+
+        {/* Quick Actions */}
+        <div className="bg-white/70 backdrop-blur-sm rounded-xl p-6 border shadow-sm">
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">Quick Actions</h3>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <button
+              onClick={() => setShowCreateModal(true)}
+              className="flex items-center gap-3 p-4 bg-gradient-to-r from-blue-100 to-purple-100 rounded-lg hover:from-blue-200 hover:to-purple-200 transition-all duration-200 border border-blue-200"
+            >
+              <Plus className="w-5 h-5 text-blue-600" />
+              <div className="text-left">
+                <p className="font-medium text-gray-900">Create Room</p>
+                <p className="text-sm text-gray-600">Start a new conversation</p>
+              </div>
+            </button>
+
+            <button
+              onClick={() => setFilter('active')}
+              className="flex items-center gap-3 p-4 bg-gradient-to-r from-green-100 to-emerald-100 rounded-lg hover:from-green-200 hover:to-emerald-200 transition-all duration-200 border border-green-200"
+            >
+              <Zap className="w-5 h-5 text-green-600" />
+              <div className="text-left">
+                <p className="font-medium text-gray-900">Join Active</p>
+                <p className="text-sm text-gray-600">Find busy rooms</p>
+              </div>
+            </button>
+
+            <button
+              onClick={loadRooms}
+              className="flex items-center gap-3 p-4 bg-gradient-to-r from-orange-100 to-yellow-100 rounded-lg hover:from-orange-200 hover:to-yellow-200 transition-all duration-200 border border-orange-200"
+            >
+              <Refresh className="w-5 h-5 text-orange-600" />
+              <div className="text-left">
+                <p className="font-medium text-gray-900">Refresh</p>
+                <p className="text-sm text-gray-600">Update room list</p>
+              </div>
+            </button>
+          </div>
         </div>
       </div>
 
