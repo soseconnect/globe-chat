@@ -260,3 +260,4 @@ export function useRoomParticipants(roomId: string, userName: string) {
 
   return { participants, loading, error, refetch: loadParticipants };
 }
+export { MessageBubble };
