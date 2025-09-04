@@ -18,7 +18,7 @@ export function TypingIndicator({ typingUsers }: TypingIndicatorProps) {
   };
 
   return (
-    <div className="flex items-center gap-3 px-4 py-3 mb-2">
+    <div className="flex items-center gap-3 px-4 py-3 mb-2 animate-in slide-in-from-bottom-2">
       <div className="flex gap-1">
         <div className="w-2 h-2 bg-blue-500 rounded-full animate-bounce"></div>
         <div className="w-2 h-2 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>

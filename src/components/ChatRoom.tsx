@@ -1,14 +1,17 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Send, Users, Settings, ArrowLeft, Share, Mic, MicOff, Video, VideoOff, Smile, Search, Bell, BellOff, MoreVertical, Zap, Activity } from 'lucide-react';
+import { Send, Users, Settings, ArrowLeft, Share, Mic, MicOff, Video, VideoOff, Smile, Search, Bell, BellOff, Phone, PhoneOff, Volume2, VolumeX, Maximize2, Minimize2 } from 'lucide-react';
 import { Room, Message } from '../lib/supabase';
 import { useUser } from '../contexts/UserContext';
 import { useRealtimeMessages } from '../hooks/useRealtimeMessages';
 import { useTypingIndicator } from '../hooks/useTypingIndicator';
 import { useRoomParticipants } from '../hooks/useRoomParticipants';
+import { usePresence } from '../hooks/usePresence';
+import { useWebRTC } from '../hooks/useWebRTC';
 import { TypingIndicator } from './TypingIndicator';
 import { RoomSettings } from './RoomSettings';
 import { MessageBubble } from './MessageBubble';
 import { EmojiPicker } from './EmojiPicker';
+import { VideoCall } from './VideoCall';
 
 interface ChatRoomProps {
   room: Room;
@@ -21,27 +24,33 @@ export function ChatRoom({ room, onLeave }: ChatRoomProps) {
   const [showSettings, setShowSettings] = useState(false);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [currentRoom, setCurrentRoom] = useState(room);
-  const [isVoiceEnabled, setIsVoiceEnabled] = useState(false);
-  const [isVideoEnabled, setIsVideoEnabled] = useState(false);
   const [notifications, setNotifications] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [showSearch, setShowSearch] = useState(false);
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
-  const [isRecording, setIsRecording] = useState(false);
+  const [soundEnabled, setSoundEnabled] = useState(true);
+  const [showVideoCall, setShowVideoCall] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const lastMessageCountRef = useRef(0);
 
   const { messages, loading, sendMessage } = useRealtimeMessages(room.id);
   const { typingUsers, startTyping, stopTyping } = useTypingIndicator(room.id, userName || '');
   const { participants } = useRoomParticipants(room.id, userName || '');
+  const { onlineUsers } = usePresence(room.id, userName || '');
+  const webRTC = useWebRTC(room.id, userName || '');
 
+  // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
-    scrollToBottom();
-  }, [messages]);
+    if (messages.length > lastMessageCountRef.current) {
+      scrollToBottom();
+      lastMessageCountRef.current = messages.length;
+    }
+  }, [messages.length]);
 
+  // Auto-focus input when component mounts
   useEffect(() => {
-    // Auto-focus input when component mounts
     const timer = setTimeout(() => {
       inputRef.current?.focus();
     }, 100);
@@ -50,27 +59,34 @@ export function ChatRoom({ room, onLeave }: ChatRoomProps) {
 
   // Sound notification for new messages
   useEffect(() => {
-    if (messages.length > 0 && notifications) {
+    if (messages.length > 0 && notifications && soundEnabled) {
       const lastMessage = messages[messages.length - 1];
       if (lastMessage.user_name !== userName && !lastMessage.id.startsWith('temp-')) {
-        // Create notification sound
-        const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-        const oscillator = audioContext.createOscillator();
-        const gainNode = audioContext.createGain();
-        
-        oscillator.connect(gainNode);
-        gainNode.connect(audioContext.destination);
-        
-        oscillator.frequency.setValueAtTime(800, audioContext.currentTime);
-        oscillator.frequency.setValueAtTime(600, audioContext.currentTime + 0.1);
-        gainNode.gain.setValueAtTime(0.1, audioContext.currentTime);
-        gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.2);
-        
-        oscillator.start(audioContext.currentTime);
-        oscillator.stop(audioContext.currentTime + 0.2);
+        playNotificationSound();
       }
     }
-  }, [messages, userName, notifications]);
+  }, [messages, userName, notifications, soundEnabled]);
+
+  const playNotificationSound = () => {
+    try {
+      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const oscillator = audioContext.createOscillator();
+      const gainNode = audioContext.createGain();
+      
+      oscillator.connect(gainNode);
+      gainNode.connect(audioContext.destination);
+      
+      oscillator.frequency.setValueAtTime(800, audioContext.currentTime);
+      oscillator.frequency.setValueAtTime(600, audioContext.currentTime + 0.1);
+      gainNode.gain.setValueAtTime(0.1, audioContext.currentTime);
+      gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.2);
+      
+      oscillator.start(audioContext.currentTime);
+      oscillator.stop(audioContext.currentTime + 0.2);
+    } catch (error) {
+      console.error('Error playing notification sound:', error);
+    }
+  };
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -123,10 +139,14 @@ export function ChatRoom({ room, onLeave }: ChatRoomProps) {
     
     // Show toast notification
     const toast = document.createElement('div');
-    toast.className = 'fixed top-4 right-4 bg-green-500 text-white px-4 py-2 rounded-lg shadow-lg z-50';
+    toast.className = 'fixed top-4 right-4 bg-green-500 text-white px-4 py-2 rounded-lg shadow-lg z-50 animate-in slide-in-from-top-2';
     toast.textContent = 'Room link copied!';
     document.body.appendChild(toast);
-    setTimeout(() => document.body.removeChild(toast), 2000);
+    setTimeout(() => {
+      if (document.body.contains(toast)) {
+        document.body.removeChild(toast);
+      }
+    }, 3000);
   };
 
   const handleEmojiSelect = (emoji: string) => {
@@ -168,6 +188,10 @@ export function ChatRoom({ room, onLeave }: ChatRoomProps) {
     }
   };
 
+  const getOnlineStatus = (participantName: string) => {
+    return onlineUsers.some(user => user.user_name === participantName && user.is_online);
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center">
@@ -180,10 +204,10 @@ export function ChatRoom({ room, onLeave }: ChatRoomProps) {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex flex-col">
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-blue-50 flex flex-col">
       {/* Enhanced Header */}
       <div className="bg-white/95 backdrop-blur-md shadow-lg border-b border-gray-200 sticky top-0 z-20">
-        <div className="flex items-center justify-between max-w-6xl mx-auto px-4 py-4">
+        <div className="flex items-center justify-between max-w-7xl mx-auto px-4 py-4">
           <div className="flex items-center gap-4">
             <button
               onClick={onLeave}
@@ -198,11 +222,12 @@ export function ChatRoom({ room, onLeave }: ChatRoomProps) {
                 <div className="flex items-center gap-1">
                   <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
                   <Users className="w-4 h-4" />
-                  <span>{participants.length} online</span>
+                  <span>{participants.length} members</span>
+                  <span className="text-green-600">({onlineUsers.length} online)</span>
                 </div>
                 <span className="capitalize">{currentRoom.type} room</span>
                 <div className="flex items-center gap-1">
-                  <Activity className="w-3 h-3 text-green-600" />
+                  <div className="w-2 h-2 bg-green-500 rounded-full"></div>
                   <span className="text-green-600 font-medium">Live</span>
                 </div>
               </div>
@@ -218,6 +243,14 @@ export function ChatRoom({ room, onLeave }: ChatRoomProps) {
               <Search className="w-4 h-4" />
             </button>
 
+            {/* Sound Toggle */}
+            <button
+              onClick={() => setSoundEnabled(!soundEnabled)}
+              className={`p-2 rounded-lg transition-colors ${soundEnabled ? 'text-blue-600' : 'text-gray-400'}`}
+            >
+              {soundEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
+            </button>
+
             {/* Notifications */}
             <button
               onClick={() => setNotifications(!notifications)}
@@ -229,23 +262,33 @@ export function ChatRoom({ room, onLeave }: ChatRoomProps) {
             {/* Voice/Video Controls */}
             <div className="hidden sm:flex items-center gap-1 mr-2">
               <button
-                onClick={() => setIsVoiceEnabled(!isVoiceEnabled)}
+                onClick={webRTC.toggleAudio}
                 className={`p-2 rounded-lg transition-colors ${
-                  isVoiceEnabled ? 'bg-green-100 text-green-600' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                  webRTC.isAudioEnabled ? 'bg-green-100 text-green-600' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
                 }`}
-                title={isVoiceEnabled ? 'Mute' : 'Unmute'}
+                title={webRTC.isAudioEnabled ? 'Mute' : 'Unmute'}
               >
-                {isVoiceEnabled ? <Mic className="w-4 h-4" /> : <MicOff className="w-4 h-4" />}
+                {webRTC.isAudioEnabled ? <Mic className="w-4 h-4" /> : <MicOff className="w-4 h-4" />}
               </button>
               
               <button
-                onClick={() => setIsVideoEnabled(!isVideoEnabled)}
+                onClick={webRTC.toggleVideo}
                 className={`p-2 rounded-lg transition-colors ${
-                  isVideoEnabled ? 'bg-blue-100 text-blue-600' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                  webRTC.isVideoEnabled ? 'bg-blue-100 text-blue-600' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
                 }`}
-                title={isVideoEnabled ? 'Stop Video' : 'Start Video'}
+                title={webRTC.isVideoEnabled ? 'Stop Video' : 'Start Video'}
               >
-                {isVideoEnabled ? <Video className="w-4 h-4" /> : <VideoOff className="w-4 h-4" />}
+                {webRTC.isVideoEnabled ? <Video className="w-4 h-4" /> : <VideoOff className="w-4 h-4" />}
+              </button>
+
+              <button
+                onClick={() => setShowVideoCall(!showVideoCall)}
+                className={`p-2 rounded-lg transition-colors ${
+                  showVideoCall ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-600 hover:bg-green-200'
+                }`}
+                title={showVideoCall ? 'End Call' : 'Start Call'}
+              >
+                {showVideoCall ? <PhoneOff className="w-4 h-4" /> : <Phone className="w-4 h-4" />}
               </button>
             </div>
 
@@ -281,6 +324,15 @@ export function ChatRoom({ room, onLeave }: ChatRoomProps) {
           </div>
         )}
       </div>
+
+      {/* Video Call Overlay */}
+      {showVideoCall && (
+        <VideoCall
+          webRTC={webRTC}
+          participants={participants.filter(p => getOnlineStatus(p.user_name))}
+          onClose={() => setShowVideoCall(false)}
+        />
+      )}
 
       {/* Messages Area */}
       <div className="flex-1 overflow-hidden flex">
@@ -319,6 +371,7 @@ export function ChatRoom({ room, onLeave }: ChatRoomProps) {
                       isLastInGroup={isLastInGroup}
                       formatTime={formatTime}
                       onReply={handleReply}
+                      isOnline={getOnlineStatus(message.user_name)}
                     />
                   </div>
                 );
@@ -344,7 +397,7 @@ export function ChatRoom({ room, onLeave }: ChatRoomProps) {
                   onClick={() => setReplyingTo(null)}
                   className="p-1 hover:bg-blue-200 rounded transition-colors"
                 >
-                  <MoreVertical className="w-4 h-4 text-blue-600" />
+                  ×
                 </button>
               </div>
             </div>
@@ -404,43 +457,50 @@ export function ChatRoom({ room, onLeave }: ChatRoomProps) {
           <div className="p-4 border-b border-gray-200 bg-gradient-to-r from-blue-50 to-purple-50">
             <h3 className="font-semibold text-gray-900 flex items-center gap-2">
               <Users className="w-5 h-5" />
-              Participants ({participants.length})
+              Members ({participants.length})
             </h3>
-            <p className="text-xs text-gray-500 mt-1">All users are online and active</p>
+            <p className="text-xs text-gray-500 mt-1">{onlineUsers.length} online • {participants.length - onlineUsers.length} offline</p>
           </div>
           
           <div className="p-4 space-y-3 max-h-80 overflow-y-auto">
-            {participants.map((participant) => (
-              <div
-                key={participant.user_name}
-                className="flex items-center gap-3 p-3 rounded-xl hover:bg-gray-50 transition-all duration-200 border border-transparent hover:border-gray-200 hover:shadow-sm"
-              >
-                <div className="relative">
-                  <div className="w-10 h-10 bg-gradient-to-r from-green-400 to-blue-500 rounded-full flex items-center justify-center text-white text-sm font-medium shadow-md">
-                    {participant.user_name[0].toUpperCase()}
+            {participants.map((participant) => {
+              const isOnline = getOnlineStatus(participant.user_name);
+              return (
+                <div
+                  key={participant.user_name}
+                  className="flex items-center gap-3 p-3 rounded-xl hover:bg-gray-50 transition-all duration-200 border border-transparent hover:border-gray-200 hover:shadow-sm"
+                >
+                  <div className="relative">
+                    <div className="w-10 h-10 bg-gradient-to-r from-green-400 to-blue-500 rounded-full flex items-center justify-center text-white text-sm font-medium shadow-md">
+                      {participant.user_name[0].toUpperCase()}
+                    </div>
+                    <div className={`absolute -bottom-1 -right-1 w-4 h-4 border-2 border-white rounded-full ${
+                      isOnline ? 'bg-green-500 animate-pulse' : 'bg-gray-400'
+                    }`}></div>
                   </div>
-                  <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-green-500 border-2 border-white rounded-full animate-pulse"></div>
-                </div>
-                
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <p className="text-sm font-medium text-gray-900 truncate">
-                      {participant.user_name}
-                      {participant.user_name === userName && ' (You)'}
-                    </p>
-                    {participant.is_admin && (
-                      <span className="text-xs bg-gradient-to-r from-blue-100 to-purple-100 text-blue-700 px-2 py-0.5 rounded-full border">
-                        Admin
+                  
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <p className="text-sm font-medium text-gray-900 truncate">
+                        {participant.user_name}
+                        {participant.user_name === userName && ' (You)'}
+                      </p>
+                      {participant.is_admin && (
+                        <span className="text-xs bg-gradient-to-r from-blue-100 to-purple-100 text-blue-700 px-2 py-0.5 rounded-full border">
+                          Admin
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <div className={`w-2 h-2 rounded-full ${isOnline ? 'bg-green-500 animate-pulse' : 'bg-gray-400'}`}></div>
+                      <span className="text-xs text-gray-500">
+                        {isOnline ? 'Active now' : 'Offline'}
                       </span>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
-                    <span className="text-xs text-gray-500">Active now</span>
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
 
           {/* Enhanced Voice/Video Controls */}
@@ -448,39 +508,42 @@ export function ChatRoom({ room, onLeave }: ChatRoomProps) {
             <div className="space-y-3">
               <div className="flex gap-2">
                 <button 
-                  onClick={() => setIsVoiceEnabled(!isVoiceEnabled)}
+                  onClick={webRTC.toggleAudio}
                   className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg transition-all duration-200 ${
-                    isVoiceEnabled 
+                    webRTC.isAudioEnabled 
                       ? 'bg-green-500 text-white shadow-md' 
                       : 'bg-white text-gray-700 hover:bg-gray-100 border'
                   }`}
                 >
-                  {isVoiceEnabled ? <Mic className="w-4 h-4" /> : <MicOff className="w-4 h-4" />}
-                  <span className="text-sm">{isVoiceEnabled ? 'Mute' : 'Voice'}</span>
+                  {webRTC.isAudioEnabled ? <Mic className="w-4 h-4" /> : <MicOff className="w-4 h-4" />}
+                  <span className="text-sm">{webRTC.isAudioEnabled ? 'Mute' : 'Audio'}</span>
                 </button>
                 
                 <button 
-                  onClick={() => setIsVideoEnabled(!isVideoEnabled)}
+                  onClick={webRTC.toggleVideo}
                   className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg transition-all duration-200 ${
-                    isVideoEnabled 
+                    webRTC.isVideoEnabled 
                       ? 'bg-blue-500 text-white shadow-md' 
                       : 'bg-white text-gray-700 hover:bg-gray-100 border'
                   }`}
                 >
-                  {isVideoEnabled ? <Video className="w-4 h-4" /> : <VideoOff className="w-4 h-4" />}
-                  <span className="text-sm">{isVideoEnabled ? 'Stop' : 'Video'}</span>
+                  {webRTC.isVideoEnabled ? <Video className="w-4 h-4" /> : <VideoOff className="w-4 h-4" />}
+                  <span className="text-sm">{webRTC.isVideoEnabled ? 'Stop' : 'Video'}</span>
                 </button>
               </div>
               
-              <button className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-gradient-to-r from-red-500 to-pink-500 text-white rounded-lg hover:from-red-600 hover:to-pink-600 transition-all duration-200 shadow-md">
-                <Zap className="w-4 h-4" />
-                <span className="text-sm">Start Call</span>
+              <button 
+                onClick={() => setShowVideoCall(!showVideoCall)}
+                className={`w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg transition-all duration-200 shadow-md ${
+                  showVideoCall 
+                    ? 'bg-gradient-to-r from-red-500 to-pink-500 text-white hover:from-red-600 hover:to-pink-600' 
+                    : 'bg-gradient-to-r from-green-500 to-emerald-500 text-white hover:from-green-600 hover:to-emerald-600'
+                }`}
+              >
+                {showVideoCall ? <PhoneOff className="w-4 h-4" /> : <Phone className="w-4 h-4" />}
+                <span className="text-sm">{showVideoCall ? 'End Call' : 'Start Call'}</span>
               </button>
             </div>
-            
-            <p className="text-xs text-gray-500 text-center mt-3">
-              WebRTC features coming soon
-            </p>
           </div>
 
           {/* Room Stats */}
@@ -488,7 +551,11 @@ export function ChatRoom({ room, onLeave }: ChatRoomProps) {
             <div className="space-y-2 text-xs text-gray-500">
               <div className="flex justify-between">
                 <span>Messages today:</span>
-                <span className="font-medium">{messages.filter(m => formatDate(m.created_at) === 'Today').length}</span>
+                <span className="font-medium text-blue-600">{messages.filter(m => formatDate(m.created_at) === 'Today').length}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Total messages:</span>
+                <span className="font-medium text-green-600">{messages.length}</span>
               </div>
               <div className="flex justify-between">
                 <span>Room created:</span>

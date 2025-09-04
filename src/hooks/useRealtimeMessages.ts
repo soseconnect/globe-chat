@@ -5,7 +5,7 @@ export function useRealtimeMessages(roomId: string) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
   const channelRef = useRef<any>(null);
-  const lastMessageIdRef = useRef<string>('');
+  const messageIdsRef = useRef<Set<string>>(new Set());
 
   const loadMessages = useCallback(async () => {
     try {
@@ -14,15 +14,15 @@ export function useRealtimeMessages(roomId: string) {
         .select('*')
         .eq('room_id', roomId)
         .order('created_at', { ascending: true })
-        .limit(100);
+        .limit(200);
 
       if (error) throw error;
-      setMessages(data || []);
       
-      // Store last message ID to prevent duplicates
-      if (data && data.length > 0) {
-        lastMessageIdRef.current = data[data.length - 1].id;
-      }
+      const validMessages = data || [];
+      setMessages(validMessages);
+      
+      // Track message IDs
+      messageIdsRef.current = new Set(validMessages.map(msg => msg.id));
     } catch (error) {
       console.error('Error loading messages:', error);
     } finally {
@@ -31,6 +31,11 @@ export function useRealtimeMessages(roomId: string) {
   }, [roomId]);
 
   useEffect(() => {
+    // Reset state when room changes
+    setMessages([]);
+    setLoading(true);
+    messageIdsRef.current.clear();
+    
     loadMessages();
 
     // Clean up existing channel
@@ -38,10 +43,9 @@ export function useRealtimeMessages(roomId: string) {
       supabase.removeChannel(channelRef.current);
     }
 
-    // Create new channel with unique name
-    const channelName = `room-messages-${roomId}-${Date.now()}`;
+    // Create new channel for real-time updates
     channelRef.current = supabase
-      .channel(channelName)
+      .channel(`messages_${roomId}_${Date.now()}`)
       .on(
         'postgres_changes',
         {
@@ -53,27 +57,26 @@ export function useRealtimeMessages(roomId: string) {
         (payload) => {
           const newMessage = payload.new as Message;
           
-          // Prevent duplicate messages
-          if (newMessage.id === lastMessageIdRef.current) return;
+          // Prevent duplicates
+          if (messageIdsRef.current.has(newMessage.id)) return;
+          
+          messageIdsRef.current.add(newMessage.id);
           
           setMessages(prev => {
-            // Check if message already exists
-            const exists = prev.some(msg => msg.id === newMessage.id);
-            if (exists) return prev;
-            
-            // Remove any temp message with same content and user
+            // Remove any temp message with same content
             const filtered = prev.filter(msg => 
               !(msg.id.startsWith('temp-') && 
                 msg.content === newMessage.content && 
                 msg.user_name === newMessage.user_name)
             );
             
-            lastMessageIdRef.current = newMessage.id;
             return [...filtered, newMessage];
           });
         }
       )
-      .subscribe();
+      .subscribe((status) => {
+        console.log('Messages subscription status:', status);
+      });
 
     return () => {
       if (channelRef.current) {
@@ -88,20 +91,19 @@ export function useRealtimeMessages(roomId: string) {
 
     const tempId = `temp-${Date.now()}-${Math.random()}`;
     
+    // Optimistic update
+    const tempMessage: Message = {
+      id: tempId,
+      room_id: roomId,
+      user_name: userName,
+      content: content.trim(),
+      created_at: new Date().toISOString(),
+      message_type: 'text'
+    };
+
+    setMessages(prev => [...prev, tempMessage]);
+
     try {
-      // Optimistic update
-      const tempMessage: Message = {
-        id: tempId,
-        room_id: roomId,
-        user_name: userName,
-        content: content.trim(),
-        created_at: new Date().toISOString(),
-        message_type: 'text'
-      };
-
-      setMessages(prev => [...prev, tempMessage]);
-
-      // Send to database
       const { error } = await supabase
         .from('messages')
         .insert([{
@@ -116,9 +118,7 @@ export function useRealtimeMessages(roomId: string) {
     } catch (error) {
       console.error('Error sending message:', error);
       // Remove failed temp message
-      setMessages(prev => 
-        prev.filter(msg => msg.id !== tempId)
-      );
+      setMessages(prev => prev.filter(msg => msg.id !== tempId));
     }
   }, [roomId]);
 

@@ -11,9 +11,20 @@ export function useTypingIndicator(roomId: string, userName: string) {
     if (!userName || !channelRef.current) return;
 
     try {
+      // Update database
+      await supabase
+        .from('typing_indicators')
+        .upsert({
+          room_id: roomId,
+          user_name: userName,
+          is_typing: typing,
+          last_typed: new Date().toISOString()
+        });
+
+      // Broadcast to other users
       await channelRef.current.send({
         type: 'broadcast',
-        event: 'typing',
+        event: 'typing_update',
         payload: {
           user_name: userName,
           is_typing: typing,
@@ -37,11 +48,11 @@ export function useTypingIndicator(roomId: string, userName: string) {
       clearTimeout(typingTimeoutRef.current);
     }
 
-    // Stop typing after 2 seconds of inactivity
+    // Stop typing after 3 seconds of inactivity
     typingTimeoutRef.current = setTimeout(() => {
       setIsTyping(false);
       updateTypingStatus(false);
-    }, 2000);
+    }, 3000);
   }, [isTyping, updateTypingStatus]);
 
   const stopTyping = useCallback(() => {
@@ -62,10 +73,9 @@ export function useTypingIndicator(roomId: string, userName: string) {
     }
 
     // Create new channel
-    const channelName = `typing-${roomId}-${Date.now()}`;
     channelRef.current = supabase
-      .channel(channelName)
-      .on('broadcast', { event: 'typing' }, (payload) => {
+      .channel(`typing_${roomId}_${Date.now()}`)
+      .on('broadcast', { event: 'typing_update' }, (payload) => {
         const { user_name, is_typing, room_id } = payload.payload;
         
         // Only process if it's for this room and not from current user
@@ -81,13 +91,39 @@ export function useTypingIndicator(roomId: string, userName: string) {
           return filtered;
         });
 
-        // Auto-remove typing indicator after 3 seconds
+        // Auto-remove typing indicator after 5 seconds
         if (is_typing) {
           setTimeout(() => {
             setTypingUsers(prev => prev.filter(user => user !== user_name));
-          }, 3000);
+          }, 5000);
         }
       })
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'typing_indicators',
+          filter: `room_id=eq.${roomId}`,
+        },
+        (payload) => {
+          const indicator = payload.new || payload.old;
+          if (!indicator || indicator.user_name === userName) return;
+
+          if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
+            if (indicator.is_typing) {
+              setTypingUsers(prev => {
+                if (!prev.includes(indicator.user_name)) {
+                  return [...prev, indicator.user_name];
+                }
+                return prev;
+              });
+            } else {
+              setTypingUsers(prev => prev.filter(user => user !== indicator.user_name));
+            }
+          }
+        }
+      )
       .subscribe();
 
     return () => {
@@ -101,9 +137,51 @@ export function useTypingIndicator(roomId: string, userName: string) {
     };
   }, [roomId, userName]);
 
-  return {
-    typingUsers,
-    startTyping,
-    stopTyping
-  };
+  const sendMessage = useCallback(async (content: string, userName: string) => {
+    if (!content.trim()) return;
+
+    const tempId = `temp-${Date.now()}-${Math.random()}`;
+    
+    try {
+      // Optimistic update
+      const tempMessage: Message = {
+        id: tempId,
+        room_id: roomId,
+        user_name: userName,
+        content: content.trim(),
+        created_at: new Date().toISOString(),
+        message_type: 'text'
+      };
+
+      setMessages(prev => [...prev, tempMessage]);
+
+      // Send to database
+      const { data, error } = await supabase
+        .from('messages')
+        .insert([{
+          room_id: roomId,
+          user_name: userName,
+          content: content.trim(),
+          message_type: 'text'
+        }])
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      // Replace temp message with real one
+      setMessages(prev => 
+        prev.map(msg => 
+          msg.id === tempId ? data : msg
+        )
+      );
+
+    } catch (error) {
+      console.error('Error sending message:', error);
+      // Remove failed temp message
+      setMessages(prev => prev.filter(msg => msg.id !== tempId));
+    }
+  }, [roomId]);
+
+  return { messages, loading, sendMessage, refetch: loadMessages };
 }
