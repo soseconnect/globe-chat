@@ -1,17 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { supabase } from '../lib/supabase';
-
-interface UserPresence {
-  user_name: string;
-  is_online: boolean;
-  last_seen: string;
-  current_room_id?: string;
-}
+import { supabase, UserPresence } from '../lib/supabase';
 
 export function usePresence(roomId: string, userName: string) {
   const [onlineUsers, setOnlineUsers] = useState<UserPresence[]>([]);
   const channelRef = useRef<any>(null);
   const heartbeatRef = useRef<NodeJS.Timeout>();
+  const cleanupRef = useRef<NodeJS.Timeout>();
 
   const updatePresence = useCallback(async (isOnline: boolean = true) => {
     if (!userName) return;
@@ -35,26 +29,45 @@ export function usePresence(roomId: string, userName: string) {
       const { data, error } = await supabase
         .from('user_presence')
         .select('*')
-        .eq('current_room_id', roomId)
-        .eq('is_online', true);
+        .eq('current_room_id', roomId);
 
       if (error) throw error;
-      setOnlineUsers(data || []);
+
+      // Filter users who are actually online (last seen within 1 minute)
+      const now = new Date();
+      const activeUsers = (data || []).filter(user => {
+        if (!user.is_online) return false;
+        const lastSeen = new Date(user.last_seen);
+        return (now.getTime() - lastSeen.getTime()) < 60000; // 1 minute
+      });
+
+      setOnlineUsers(activeUsers);
     } catch (error) {
       console.error('Error loading online users:', error);
     }
   }, [roomId]);
 
   useEffect(() => {
+    if (!roomId || !userName) return;
+
     updatePresence(true);
     loadOnlineUsers();
 
-    // Set up heartbeat
+    // Set up heartbeat every 15 seconds
     heartbeatRef.current = setInterval(() => {
       updatePresence(true);
     }, 15000);
 
+    // Clean up old presence data every 30 seconds
+    cleanupRef.current = setInterval(() => {
+      loadOnlineUsers();
+    }, 30000);
+
     // Subscribe to presence changes
+    if (channelRef.current) {
+      supabase.removeChannel(channelRef.current);
+    }
+
     channelRef.current = supabase
       .channel(`presence_${roomId}_${Date.now()}`)
       .on(
@@ -76,14 +89,25 @@ export function usePresence(roomId: string, userName: string) {
         updatePresence(false);
       } else {
         updatePresence(true);
+        loadOnlineUsers();
       }
     };
 
+    // Handle page unload
+    const handleBeforeUnload = () => {
+      updatePresence(false);
+    };
+
     document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('beforeunload', handleBeforeUnload);
 
     return () => {
       if (heartbeatRef.current) {
         clearInterval(heartbeatRef.current);
+      }
+      
+      if (cleanupRef.current) {
+        clearInterval(cleanupRef.current);
       }
       
       if (channelRef.current) {
@@ -91,6 +115,7 @@ export function usePresence(roomId: string, userName: string) {
       }
       
       document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('beforeunload', handleBeforeUnload);
       updatePresence(false);
     };
   }, [roomId, userName, updatePresence, loadOnlineUsers]);

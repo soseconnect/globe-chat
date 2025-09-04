@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { supabase, RoomParticipant } from '../lib/supabase';
+import { supabase, RoomParticipant, UserPresence } from '../lib/supabase';
 
 interface EnhancedParticipant extends RoomParticipant {
   is_online: boolean;
@@ -10,30 +10,38 @@ export function useRoomParticipants(roomId: string, userName: string) {
   const [participants, setParticipants] = useState<EnhancedParticipant[]>([]);
   const [loading, setLoading] = useState(true);
   const channelRef = useRef<any>(null);
-  const presenceRef = useRef<any>(null);
+  const presenceChannelRef = useRef<any>(null);
   const heartbeatRef = useRef<NodeJS.Timeout>();
+  const isJoinedRef = useRef(false);
 
   const loadParticipants = useCallback(async () => {
     try {
-      const { data, error } = await supabase
+      // Get participants
+      const { data: participantsData, error: participantsError } = await supabase
         .from('room_participants')
-        .select(`
-          *,
-          user_presence (
-            is_online,
-            last_seen
-          )
-        `)
+        .select('*')
         .eq('room_id', roomId)
         .order('joined_at', { ascending: true });
 
-      if (error) throw error;
-      
-      const enhancedParticipants = (data || []).map(p => ({
-        ...p,
-        is_online: p.user_presence?.is_online || false,
-        last_seen: p.user_presence?.last_seen || p.joined_at
-      }));
+      if (participantsError) throw participantsError;
+
+      // Get presence data
+      const { data: presenceData, error: presenceError } = await supabase
+        .from('user_presence')
+        .select('*')
+        .in('user_name', (participantsData || []).map(p => p.user_name));
+
+      if (presenceError) throw presenceError;
+
+      // Combine data
+      const enhancedParticipants = (participantsData || []).map(p => {
+        const presence = presenceData?.find(pr => pr.user_name === p.user_name);
+        return {
+          ...p,
+          is_online: presence?.is_online || false,
+          last_seen: presence?.last_seen || p.joined_at
+        };
+      });
       
       setParticipants(enhancedParticipants);
     } catch (error) {
@@ -61,21 +69,29 @@ export function useRoomParticipants(roomId: string, userName: string) {
   }, [userName, roomId]);
 
   const joinRoom = useCallback(async () => {
-    if (!userName) return;
+    if (!userName || isJoinedRef.current) return;
 
     try {
-      // Join room
-      await supabase
+      // Check if already a participant
+      const { data: existing } = await supabase
         .from('room_participants')
-        .upsert({
-          room_id: roomId,
-          user_name: userName,
-          is_admin: false,
-          joined_at: new Date().toISOString()
-        });
+        .select('*')
+        .eq('room_id', roomId)
+        .eq('user_name', userName)
+        .single();
 
-      // Update presence
+      if (!existing) {
+        await supabase
+          .from('room_participants')
+          .insert({
+            room_id: roomId,
+            user_name: userName,
+            is_admin: false
+          });
+      }
+
       await updatePresence(true);
+      isJoinedRef.current = true;
     } catch (error) {
       console.error('Error joining room:', error);
     }
@@ -91,21 +107,29 @@ export function useRoomParticipants(roomId: string, userName: string) {
         .match({ room_id: roomId, user_name: userName });
 
       await updatePresence(false);
+      isJoinedRef.current = false;
     } catch (error) {
       console.error('Error leaving room:', error);
     }
   }, [roomId, userName, updatePresence]);
 
   useEffect(() => {
+    if (!roomId || !userName) return;
+
+    // Join room and load participants
     joinRoom();
     loadParticipants();
 
     // Set up presence heartbeat
     heartbeatRef.current = setInterval(() => {
       updatePresence(true);
-    }, 30000); // Update every 30 seconds
+    }, 15000);
 
     // Subscribe to participant changes
+    if (channelRef.current) {
+      supabase.removeChannel(channelRef.current);
+    }
+
     channelRef.current = supabase
       .channel(`participants_${roomId}_${Date.now()}`)
       .on(
@@ -120,6 +144,15 @@ export function useRoomParticipants(roomId: string, userName: string) {
           loadParticipants();
         }
       )
+      .subscribe();
+
+    // Subscribe to presence changes
+    if (presenceChannelRef.current) {
+      supabase.removeChannel(presenceChannelRef.current);
+    }
+
+    presenceChannelRef.current = supabase
+      .channel(`presence_${roomId}_${Date.now()}`)
       .on(
         'postgres_changes',
         {
@@ -133,21 +166,7 @@ export function useRoomParticipants(roomId: string, userName: string) {
       )
       .subscribe();
 
-    // Set up presence tracking
-    presenceRef.current = supabase
-      .channel(`presence_${roomId}`)
-      .on('presence', { event: 'sync' }, () => {
-        loadParticipants();
-      })
-      .on('presence', { event: 'join' }, () => {
-        loadParticipants();
-      })
-      .on('presence', { event: 'leave' }, () => {
-        loadParticipants();
-      })
-      .subscribe();
-
-    // Handle page visibility changes
+    // Handle page visibility
     const handleVisibilityChange = () => {
       if (document.hidden) {
         updatePresence(false);
@@ -158,7 +177,6 @@ export function useRoomParticipants(roomId: string, userName: string) {
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
-    // Cleanup on unmount
     return () => {
       if (heartbeatRef.current) {
         clearInterval(heartbeatRef.current);
@@ -168,8 +186,8 @@ export function useRoomParticipants(roomId: string, userName: string) {
         supabase.removeChannel(channelRef.current);
       }
       
-      if (presenceRef.current) {
-        supabase.removeChannel(presenceRef.current);
+      if (presenceChannelRef.current) {
+        supabase.removeChannel(presenceChannelRef.current);
       }
       
       document.removeEventListener('visibilitychange', handleVisibilityChange);

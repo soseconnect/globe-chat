@@ -6,12 +6,12 @@ export function useTypingIndicator(roomId: string, userName: string) {
   const [isTyping, setIsTyping] = useState(false);
   const typingTimeoutRef = useRef<NodeJS.Timeout>();
   const channelRef = useRef<any>(null);
+  const cleanupTimeoutRef = useRef<NodeJS.Timeout>();
 
   const updateTypingStatus = useCallback(async (typing: boolean) => {
-    if (!userName || !channelRef.current) return;
+    if (!userName || !roomId) return;
 
     try {
-      // Update database
       await supabase
         .from('typing_indicators')
         .upsert({
@@ -20,18 +20,6 @@ export function useTypingIndicator(roomId: string, userName: string) {
           is_typing: typing,
           last_typed: new Date().toISOString()
         });
-
-      // Broadcast to other users
-      await channelRef.current.send({
-        type: 'broadcast',
-        event: 'typing_update',
-        payload: {
-          user_name: userName,
-          is_typing: typing,
-          room_id: roomId,
-          timestamp: Date.now()
-        }
-      });
     } catch (error) {
       console.error('Error updating typing status:', error);
     }
@@ -48,11 +36,11 @@ export function useTypingIndicator(roomId: string, userName: string) {
       clearTimeout(typingTimeoutRef.current);
     }
 
-    // Stop typing after 3 seconds of inactivity
+    // Stop typing after 2 seconds of inactivity
     typingTimeoutRef.current = setTimeout(() => {
       setIsTyping(false);
       updateTypingStatus(false);
-    }, 3000);
+    }, 2000);
   }, [isTyping, updateTypingStatus]);
 
   const stopTyping = useCallback(() => {
@@ -66,7 +54,36 @@ export function useTypingIndicator(roomId: string, userName: string) {
     }
   }, [isTyping, updateTypingStatus]);
 
+  const loadTypingUsers = useCallback(async () => {
+    try {
+      const { data, error } = await supabase
+        .from('typing_indicators')
+        .select('*')
+        .eq('room_id', roomId)
+        .eq('is_typing', true)
+        .neq('user_name', userName);
+
+      if (error) throw error;
+
+      const activeTypers = (data || [])
+        .filter(indicator => {
+          const lastTyped = new Date(indicator.last_typed);
+          const now = new Date();
+          return (now.getTime() - lastTyped.getTime()) < 5000; // 5 seconds
+        })
+        .map(indicator => indicator.user_name);
+
+      setTypingUsers(activeTypers);
+    } catch (error) {
+      console.error('Error loading typing users:', error);
+    }
+  }, [roomId, userName]);
+
   useEffect(() => {
+    if (!roomId || !userName) return;
+
+    loadTypingUsers();
+
     // Clean up existing channel
     if (channelRef.current) {
       supabase.removeChannel(channelRef.current);
@@ -75,29 +92,6 @@ export function useTypingIndicator(roomId: string, userName: string) {
     // Create new channel
     channelRef.current = supabase
       .channel(`typing_${roomId}_${Date.now()}`)
-      .on('broadcast', { event: 'typing_update' }, (payload) => {
-        const { user_name, is_typing, room_id } = payload.payload;
-        
-        // Only process if it's for this room and not from current user
-        if (room_id !== roomId || user_name === userName) return;
-
-        setTypingUsers(prev => {
-          const filtered = prev.filter(user => user !== user_name);
-          
-          if (is_typing) {
-            return [...filtered, user_name];
-          }
-          
-          return filtered;
-        });
-
-        // Auto-remove typing indicator after 5 seconds
-        if (is_typing) {
-          setTimeout(() => {
-            setTypingUsers(prev => prev.filter(user => user !== user_name));
-          }, 5000);
-        }
-      })
       .on(
         'postgres_changes',
         {
@@ -121,67 +115,36 @@ export function useTypingIndicator(roomId: string, userName: string) {
             } else {
               setTypingUsers(prev => prev.filter(user => user !== indicator.user_name));
             }
+          } else if (payload.eventType === 'DELETE') {
+            setTypingUsers(prev => prev.filter(user => user !== indicator.user_name));
           }
         }
       )
       .subscribe();
+
+    // Clean up old typing indicators every 10 seconds
+    cleanupTimeoutRef.current = setInterval(() => {
+      loadTypingUsers();
+    }, 10000);
 
     return () => {
       if (channelRef.current) {
         supabase.removeChannel(channelRef.current);
         channelRef.current = null;
       }
+      
       if (typingTimeoutRef.current) {
         clearTimeout(typingTimeoutRef.current);
       }
+
+      if (cleanupTimeoutRef.current) {
+        clearInterval(cleanupTimeoutRef.current);
+      }
+
+      // Clean up typing status on unmount
+      updateTypingStatus(false);
     };
-  }, [roomId, userName]);
+  }, [roomId, userName, updateTypingStatus, loadTypingUsers]);
 
-  const sendMessage = useCallback(async (content: string, userName: string) => {
-    if (!content.trim()) return;
-
-    const tempId = `temp-${Date.now()}-${Math.random()}`;
-    
-    try {
-      // Optimistic update
-      const tempMessage: Message = {
-        id: tempId,
-        room_id: roomId,
-        user_name: userName,
-        content: content.trim(),
-        created_at: new Date().toISOString(),
-        message_type: 'text'
-      };
-
-      setMessages(prev => [...prev, tempMessage]);
-
-      // Send to database
-      const { data, error } = await supabase
-        .from('messages')
-        .insert([{
-          room_id: roomId,
-          user_name: userName,
-          content: content.trim(),
-          message_type: 'text'
-        }])
-        .select()
-        .single();
-
-      if (error) throw error;
-
-      // Replace temp message with real one
-      setMessages(prev => 
-        prev.map(msg => 
-          msg.id === tempId ? data : msg
-        )
-      );
-
-    } catch (error) {
-      console.error('Error sending message:', error);
-      // Remove failed temp message
-      setMessages(prev => prev.filter(msg => msg.id !== tempId));
-    }
-  }, [roomId]);
-
-  return { messages, loading, sendMessage, refetch: loadMessages };
+  return { typingUsers, startTyping, stopTyping, isTyping };
 }

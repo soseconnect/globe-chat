@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, MessageCircle, Users, RefreshCw as Refresh, Zap, Globe, TrendingUp, Clock, Star } from 'lucide-react';
+import { Plus, MessageCircle, Users, RefreshCw as Refresh, Zap, Globe, TrendingUp, Clock, Star, Activity, Wifi, WifiOff } from 'lucide-react';
 import { supabase, Room } from '../lib/supabase';
 import { useUser } from '../contexts/UserContext';
 import { RoomCard } from './RoomCard';
@@ -23,13 +23,15 @@ export function HomePage() {
   const [totalUsers, setTotalUsers] = useState(0);
   const [totalMessages, setTotalMessages] = useState(0);
   const [filter, setFilter] = useState<'all' | 'public' | 'password' | 'active'>('all');
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [lastUpdate, setLastUpdate] = useState(new Date());
 
   useEffect(() => {
     loadRooms();
     loadStats();
     
-    // Subscribe to room changes
-    const channel = supabase
+    // Set up real-time subscriptions with better error handling
+    const roomsChannel = supabase
       .channel('rooms-changes')
       .on(
         'postgres_changes',
@@ -41,6 +43,7 @@ export function HomePage() {
         () => {
           loadRooms();
           loadStats();
+          setLastUpdate(new Date());
         }
       )
       .on(
@@ -52,12 +55,35 @@ export function HomePage() {
         },
         () => {
           loadRooms();
+          setLastUpdate(new Date());
         }
       )
       .subscribe();
 
+    // Auto-refresh every 30 seconds
+    const refreshInterval = setInterval(() => {
+      loadRooms();
+      loadStats();
+      setLastUpdate(new Date());
+    }, 30000);
+
+    // Network status monitoring
+    const handleOnline = () => {
+      setIsOnline(true);
+      loadRooms();
+      loadStats();
+    };
+    
+    const handleOffline = () => setIsOnline(false);
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
     return () => {
-      supabase.removeChannel(channel);
+      supabase.removeChannel(roomsChannel);
+      clearInterval(refreshInterval);
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
     };
   }, []);
 
@@ -73,7 +99,7 @@ export function HomePage() {
 
   const loadRooms = async () => {
     try {
-      // Load public and password-protected rooms with real participant counts
+      // Load public and password-protected rooms
       const { data, error } = await supabase
         .from('rooms')
         .select('*')
@@ -83,7 +109,7 @@ export function HomePage() {
 
       if (error) throw error;
 
-      // Calculate current users count with real-time accuracy
+      // Get real participant counts
       const roomsWithCounts = await Promise.all(
         (data || []).map(async (room) => {
           const { count } = await supabase
@@ -102,6 +128,17 @@ export function HomePage() {
       setTotalUsers(roomsWithCounts.reduce((sum, room) => sum + room.current_users, 0));
     } catch (error) {
       console.error('Error loading rooms:', error);
+      
+      // Show error toast
+      const toast = document.createElement('div');
+      toast.className = 'fixed top-4 right-4 bg-red-500 text-white px-4 py-2 rounded-lg shadow-lg z-50';
+      toast.textContent = 'Failed to load rooms';
+      document.body.appendChild(toast);
+      setTimeout(() => {
+        if (document.body.contains(toast)) {
+          document.body.removeChild(toast);
+        }
+      }, 3000);
     } finally {
       setLoading(false);
     }
@@ -167,13 +204,24 @@ export function HomePage() {
     return room.type === filter;
   });
 
+  const getActivityLevel = () => {
+    const activeRooms = rooms.filter(r => r.current_users > 0).length;
+    if (activeRooms > 10) return { level: 'Very High', color: 'text-red-600', bg: 'bg-red-100' };
+    if (activeRooms > 5) return { level: 'High', color: 'text-orange-600', bg: 'bg-orange-100' };
+    if (activeRooms > 2) return { level: 'Medium', color: 'text-yellow-600', bg: 'bg-yellow-100' };
+    if (activeRooms > 0) return { level: 'Low', color: 'text-green-600', bg: 'bg-green-100' };
+    return { level: 'Quiet', color: 'text-gray-600', bg: 'bg-gray-100' };
+  };
+
+  const activityLevel = getActivityLevel();
+
   if (currentRoom) {
     return <ChatRoom room={currentRoom} onLeave={handleLeaveRoom} />;
   }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50">
-      {/* Header */}
+      {/* Enhanced Header */}
       <div className="bg-white/80 backdrop-blur-sm shadow-sm sticky top-0 z-10">
         <div className="max-w-6xl mx-auto px-4 py-6">
           <div className="flex items-center justify-between">
@@ -185,7 +233,25 @@ export function HomePage() {
                 <h1 className="text-3xl font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
                   Global Chat
                 </h1>
-                <p className="text-gray-600">Connect with people worldwide in real-time</p>
+                <div className="flex items-center gap-4 text-gray-600">
+                  <p>Connect with people worldwide in real-time</p>
+                  <div className="flex items-center gap-2">
+                    {isOnline ? (
+                      <div className="flex items-center gap-1 text-green-600">
+                        <Wifi className="w-4 h-4" />
+                        <span className="text-sm font-medium">Online</span>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1 text-red-600">
+                        <WifiOff className="w-4 h-4" />
+                        <span className="text-sm font-medium">Offline</span>
+                      </div>
+                    )}
+                    <span className="text-xs text-gray-400">
+                      Updated {lastUpdate.toLocaleTimeString()}
+                    </span>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -195,6 +261,7 @@ export function HomePage() {
                   {userName?.[0]?.toUpperCase()}
                 </div>
                 <span className="text-sm font-medium text-gray-900">{userName}</span>
+                <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
               </div>
 
               <button
@@ -208,6 +275,7 @@ export function HomePage() {
               <button
                 onClick={loadRooms}
                 className="p-2 bg-white text-gray-600 rounded-lg hover:bg-gray-50 transition-colors shadow-md border"
+                title="Refresh rooms"
               >
                 <Refresh className="w-4 h-4" />
               </button>
@@ -228,6 +296,7 @@ export function HomePage() {
               <div>
                 <p className="text-2xl font-bold text-gray-900">{rooms.length}</p>
                 <p className="text-gray-600">Active Rooms</p>
+                <p className="text-xs text-gray-500">{rooms.filter(r => r.current_users > 0).length} with users</p>
               </div>
             </div>
           </div>
@@ -240,6 +309,7 @@ export function HomePage() {
               <div>
                 <p className="text-2xl font-bold text-gray-900">{totalUsers}</p>
                 <p className="text-gray-600">Online Users</p>
+                <p className="text-xs text-green-600 font-medium">Live count</p>
               </div>
             </div>
           </div>
@@ -252,18 +322,20 @@ export function HomePage() {
               <div>
                 <p className="text-2xl font-bold text-gray-900">{totalMessages}</p>
                 <p className="text-gray-600">Total Messages</p>
+                <p className="text-xs text-purple-600 font-medium">All time</p>
               </div>
             </div>
           </div>
 
           <div className="bg-white/70 backdrop-blur-sm rounded-xl p-6 border shadow-sm hover:shadow-md transition-shadow">
             <div className="flex items-center gap-4">
-              <div className="w-12 h-12 bg-orange-100 rounded-lg flex items-center justify-center">
-                <Clock className="w-6 h-6 text-orange-600" />
+              <div className={`w-12 h-12 rounded-lg flex items-center justify-center ${activityLevel.bg}`}>
+                <Activity className={`w-6 h-6 ${activityLevel.color}`} />
               </div>
               <div>
-                <p className="text-2xl font-bold text-gray-900">24/7</p>
-                <p className="text-gray-600">Always Online</p>
+                <p className={`text-2xl font-bold ${activityLevel.color}`}>{activityLevel.level}</p>
+                <p className="text-gray-600">Activity Level</p>
+                <p className="text-xs text-gray-500">Real-time</p>
               </div>
             </div>
           </div>
@@ -272,11 +344,11 @@ export function HomePage() {
         {/* Filter Tabs */}
         <div className="flex items-center gap-2 mb-6">
           {[
-            { key: 'all', label: 'All Rooms', icon: Globe },
-            { key: 'active', label: 'Active', icon: Zap },
-            { key: 'public', label: 'Public', icon: Globe },
-            { key: 'password', label: 'Protected', icon: Star }
-          ].map(({ key, label, icon: Icon }) => (
+            { key: 'all', label: 'All Rooms', icon: Globe, count: rooms.length },
+            { key: 'active', label: 'Active', icon: Zap, count: rooms.filter(r => r.current_users > 0).length },
+            { key: 'public', label: 'Public', icon: Globe, count: rooms.filter(r => r.type === 'public').length },
+            { key: 'password', label: 'Protected', icon: Star, count: rooms.filter(r => r.type === 'password').length }
+          ].map(({ key, label, icon: Icon, count }) => (
             <button
               key={key}
               onClick={() => setFilter(key as any)}
@@ -288,6 +360,11 @@ export function HomePage() {
             >
               <Icon className="w-4 h-4" />
               <span className="text-sm font-medium">{label}</span>
+              <span className={`text-xs px-2 py-0.5 rounded-full ${
+                filter === key ? 'bg-white/20' : 'bg-gray-100'
+              }`}>
+                {count}
+              </span>
             </button>
           ))}
         </div>
@@ -300,7 +377,15 @@ export function HomePage() {
                filter === 'active' ? 'Active Rooms' :
                filter === 'public' ? 'Public Rooms' : 'Protected Rooms'}
             </h2>
-            <p className="text-gray-600">{filteredRooms.length} rooms available</p>
+            <div className="flex items-center gap-4">
+              <p className="text-gray-600">{filteredRooms.length} rooms available</p>
+              {!isOnline && (
+                <div className="flex items-center gap-1 text-red-600 bg-red-50 px-3 py-1 rounded-full border border-red-200">
+                  <WifiOff className="w-4 h-4" />
+                  <span className="text-sm">Offline</span>
+                </div>
+              )}
+            </div>
           </div>
 
           {loading ? (
@@ -342,13 +427,13 @@ export function HomePage() {
           )}
         </div>
 
-        {/* Quick Actions */}
+        {/* Enhanced Quick Actions */}
         <div className="bg-white/70 backdrop-blur-sm rounded-xl p-6 border shadow-sm">
           <h3 className="text-lg font-semibold text-gray-900 mb-4">Quick Actions</h3>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <button
               onClick={() => setShowCreateModal(true)}
-              className="flex items-center gap-3 p-4 bg-gradient-to-r from-blue-100 to-purple-100 rounded-lg hover:from-blue-200 hover:to-purple-200 transition-all duration-200 border border-blue-200"
+              className="flex items-center gap-3 p-4 bg-gradient-to-r from-blue-100 to-purple-100 rounded-lg hover:from-blue-200 hover:to-purple-200 transition-all duration-200 border border-blue-200 hover:shadow-md transform hover:scale-105"
             >
               <Plus className="w-5 h-5 text-blue-600" />
               <div className="text-left">
@@ -359,7 +444,7 @@ export function HomePage() {
 
             <button
               onClick={() => setFilter('active')}
-              className="flex items-center gap-3 p-4 bg-gradient-to-r from-green-100 to-emerald-100 rounded-lg hover:from-green-200 hover:to-emerald-200 transition-all duration-200 border border-green-200"
+              className="flex items-center gap-3 p-4 bg-gradient-to-r from-green-100 to-emerald-100 rounded-lg hover:from-green-200 hover:to-emerald-200 transition-all duration-200 border border-green-200 hover:shadow-md transform hover:scale-105"
             >
               <Zap className="w-5 h-5 text-green-600" />
               <div className="text-left">
@@ -370,7 +455,7 @@ export function HomePage() {
 
             <button
               onClick={loadRooms}
-              className="flex items-center gap-3 p-4 bg-gradient-to-r from-orange-100 to-yellow-100 rounded-lg hover:from-orange-200 hover:to-yellow-200 transition-all duration-200 border border-orange-200"
+              className="flex items-center gap-3 p-4 bg-gradient-to-r from-orange-100 to-yellow-100 rounded-lg hover:from-orange-200 hover:to-yellow-200 transition-all duration-200 border border-orange-200 hover:shadow-md transform hover:scale-105"
             >
               <Refresh className="w-5 h-5 text-orange-600" />
               <div className="text-left">

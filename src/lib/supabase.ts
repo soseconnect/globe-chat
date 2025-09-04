@@ -3,7 +3,13 @@ import { createClient } from '@supabase/supabase-js';
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || 'YOUR_SUPABASE_URL';
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || 'YOUR_SUPABASE_ANON_KEY';
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+  realtime: {
+    params: {
+      eventsPerSecond: 10,
+    },
+  },
+});
 
 export type RoomType = 'public' | 'private' | 'password';
 
@@ -41,4 +47,11 @@ export interface TypingIndicator {
   user_name: string;
   is_typing: boolean;
   last_typed: string;
+}
+
+export interface UserPresence {
+  user_name: string;
+  is_online: boolean;
+  last_seen: string;
+  current_room_id?: string;
 }

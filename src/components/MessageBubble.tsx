@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Copy, Reply, Heart, ThumbsUp, MoreVertical, Check, CheckCheck } from 'lucide-react';
+import { Copy, Reply, Heart, ThumbsUp, MoreVertical, Check, CheckCheck, Clock } from 'lucide-react';
 import { Message } from '../lib/supabase';
 
 interface MessageBubbleProps {
@@ -26,21 +26,29 @@ export function MessageBubble({
   const [showActions, setShowActions] = useState(false);
   const [reactions, setReactions] = useState<{[key: string]: number}>({});
   const [showTime, setShowTime] = useState(false);
+  const [copied, setCopied] = useState(false);
   const isTemp = message.id.startsWith('temp-');
 
-  const copyMessage = () => {
-    navigator.clipboard.writeText(message.content);
-    
-    // Show toast
-    const toast = document.createElement('div');
-    toast.className = 'fixed top-4 right-4 bg-gray-800 text-white px-4 py-2 rounded-lg shadow-lg z-50';
-    toast.textContent = 'Message copied!';
-    document.body.appendChild(toast);
-    setTimeout(() => {
-      if (document.body.contains(toast)) {
-        document.body.removeChild(toast);
-      }
-    }, 2000);
+  const copyMessage = async () => {
+    try {
+      await navigator.clipboard.writeText(message.content);
+      setCopied(true);
+      
+      // Show success feedback
+      const toast = document.createElement('div');
+      toast.className = 'fixed top-4 right-4 bg-gray-800 text-white px-4 py-2 rounded-lg shadow-lg z-50 animate-in slide-in-from-top-2';
+      toast.textContent = 'Message copied!';
+      document.body.appendChild(toast);
+      
+      setTimeout(() => {
+        setCopied(false);
+        if (document.body.contains(toast)) {
+          document.body.removeChild(toast);
+        }
+      }, 2000);
+    } catch (error) {
+      console.error('Failed to copy message:', error);
+    }
   };
 
   const addReaction = (emoji: string) => {
@@ -48,13 +56,28 @@ export function MessageBubble({
       ...prev,
       [emoji]: (prev[emoji] || 0) + 1
     }));
+
+    // Show reaction animation
+    const reactionEl = document.createElement('div');
+    reactionEl.className = 'fixed pointer-events-none text-2xl animate-bounce z-50';
+    reactionEl.textContent = emoji;
+    reactionEl.style.left = '50%';
+    reactionEl.style.top = '50%';
+    reactionEl.style.transform = 'translate(-50%, -50%)';
+    document.body.appendChild(reactionEl);
+    
+    setTimeout(() => {
+      if (document.body.contains(reactionEl)) {
+        document.body.removeChild(reactionEl);
+      }
+    }, 1000);
   };
 
   return (
     <div
       className={`flex gap-3 mb-1 group ${isOwnMessage ? 'justify-end' : 'justify-start'} ${
         showAvatar ? 'mt-4' : 'mt-1'
-      } ${isTemp ? 'opacity-70' : 'opacity-100'} transition-all duration-200`}
+      } ${isTemp ? 'opacity-70' : 'opacity-100'} transition-all duration-200 hover:bg-gray-50/50 rounded-lg p-2 -m-2`}
       onMouseEnter={() => setShowActions(true)}
       onMouseLeave={() => setShowActions(false)}
       onClick={() => setShowTime(!showTime)}
@@ -67,7 +90,7 @@ export function MessageBubble({
                 {message.user_name[0].toUpperCase()}
               </div>
               <div className={`absolute -bottom-1 -right-1 w-3 h-3 border-2 border-white rounded-full ${
-                isOnline ? 'bg-green-500' : 'bg-gray-400'
+                isOnline ? 'bg-green-500 animate-pulse' : 'bg-gray-400'
               }`}></div>
             </div>
           )}
@@ -78,7 +101,7 @@ export function MessageBubble({
         {showName && (
           <div className="text-xs text-gray-500 mb-1 px-1 font-medium flex items-center gap-2">
             {message.user_name}
-            {isOnline && <div className="w-2 h-2 bg-green-500 rounded-full"></div>}
+            {isOnline && <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>}
           </div>
         )}
         
@@ -88,19 +111,19 @@ export function MessageBubble({
               isOwnMessage
                 ? `bg-gradient-to-r from-blue-600 to-blue-700 text-white shadow-lg ${showAvatar ? 'rounded-tr-md' : ''} ${isLastInGroup ? 'rounded-br-md' : ''}`
                 : `bg-white text-gray-900 shadow-lg border border-gray-100 ${showAvatar ? 'rounded-tl-md' : ''} ${isLastInGroup ? 'rounded-bl-md' : ''}`
-            } ${isTemp ? 'animate-pulse' : ''} hover:shadow-xl transition-all duration-200 cursor-pointer`}
+            } ${isTemp ? 'animate-pulse border-dashed' : ''} hover:shadow-xl transition-all duration-200 cursor-pointer`}
           >
             <p className="text-sm leading-relaxed break-words whitespace-pre-wrap">{message.content}</p>
             
             {/* Message Actions */}
             {showActions && !isTemp && (
-              <div className={`absolute ${isOwnMessage ? 'left-2' : 'right-2'} top-1/2 transform -translate-y-1/2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200 z-10`}>
+              <div className={`absolute ${isOwnMessage ? 'left-2' : 'right-2'} top-1/2 transform -translate-y-1/2 flex gap-1 opacity-0 group-hover:opacity-100 transition-all duration-200 z-10`}>
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
                     addReaction('👍');
                   }}
-                  className="p-1.5 bg-white/95 backdrop-blur-sm rounded-full shadow-lg hover:bg-white transition-colors border"
+                  className="p-1.5 bg-white/95 backdrop-blur-sm rounded-full shadow-lg hover:bg-white hover:scale-110 transition-all duration-200 border"
                   title="Like"
                 >
                   <ThumbsUp className="w-3 h-3 text-gray-600" />
@@ -110,7 +133,7 @@ export function MessageBubble({
                     e.stopPropagation();
                     addReaction('❤️');
                   }}
-                  className="p-1.5 bg-white/95 backdrop-blur-sm rounded-full shadow-lg hover:bg-white transition-colors border"
+                  className="p-1.5 bg-white/95 backdrop-blur-sm rounded-full shadow-lg hover:bg-white hover:scale-110 transition-all duration-200 border"
                   title="Love"
                 >
                   <Heart className="w-3 h-3 text-red-500" />
@@ -120,10 +143,10 @@ export function MessageBubble({
                     e.stopPropagation();
                     copyMessage();
                   }}
-                  className="p-1.5 bg-white/95 backdrop-blur-sm rounded-full shadow-lg hover:bg-white transition-colors border"
-                  title="Copy"
+                  className={`p-1.5 bg-white/95 backdrop-blur-sm rounded-full shadow-lg hover:bg-white hover:scale-110 transition-all duration-200 border ${copied ? 'bg-green-100' : ''}`}
+                  title="Copy message"
                 >
-                  <Copy className="w-3 h-3 text-gray-600" />
+                  {copied ? <Check className="w-3 h-3 text-green-600" /> : <Copy className="w-3 h-3 text-gray-600" />}
                 </button>
                 {onReply && (
                   <button
@@ -131,7 +154,7 @@ export function MessageBubble({
                       e.stopPropagation();
                       onReply(message);
                     }}
-                    className="p-1.5 bg-white/95 backdrop-blur-sm rounded-full shadow-lg hover:bg-white transition-colors border"
+                    className="p-1.5 bg-white/95 backdrop-blur-sm rounded-full shadow-lg hover:bg-white hover:scale-110 transition-all duration-200 border"
                     title="Reply"
                   >
                     <Reply className="w-3 h-3 text-gray-600" />
@@ -140,14 +163,16 @@ export function MessageBubble({
               </div>
             )}
             
-            {/* Delivery indicator for own messages */}
+            {/* Enhanced delivery indicator */}
             {isOwnMessage && (
               <div className="absolute -bottom-1 -right-1">
-                <div className={`w-3 h-3 rounded-full border-2 border-white shadow-sm ${
-                  isTemp ? 'bg-gray-400' : 'bg-green-500'
+                <div className={`w-4 h-4 rounded-full border-2 border-white shadow-sm flex items-center justify-center ${
+                  isTemp ? 'bg-gray-400 animate-pulse' : 'bg-green-500'
                 }`}>
-                  {!isTemp && (
-                    <CheckCheck className="w-2 h-2 text-white absolute inset-0.5" />
+                  {isTemp ? (
+                    <Clock className="w-2 h-2 text-white" />
+                  ) : (
+                    <CheckCheck className="w-2.5 h-2.5 text-white" />
                   )}
                 </div>
               </div>
@@ -159,6 +184,7 @@ export function MessageBubble({
             <div className={`mt-1 ${isOwnMessage ? 'text-right' : 'text-left'}`}>
               <span className="text-xs text-gray-500 bg-white/95 backdrop-blur-sm px-2 py-1 rounded-full border shadow-sm">
                 {formatTime(message.created_at)}
+                {isTemp && <span className="ml-1 text-orange-500">(sending...)</span>}
               </span>
             </div>
           )}
@@ -170,7 +196,7 @@ export function MessageBubble({
                 <button
                   key={emoji}
                   onClick={() => addReaction(emoji)}
-                  className="flex items-center gap-1 px-2 py-1 bg-white border border-gray-200 rounded-full text-xs hover:bg-gray-50 transition-colors shadow-sm"
+                  className="flex items-center gap-1 px-2 py-1 bg-white border border-gray-200 rounded-full text-xs hover:bg-gray-50 hover:scale-105 transition-all duration-200 shadow-sm"
                 >
                   <span>{emoji}</span>
                   <span className="text-gray-600 font-medium">{count}</span>
@@ -189,7 +215,7 @@ export function MessageBubble({
                 {message.user_name[0].toUpperCase()}
               </div>
               <div className={`absolute -bottom-1 -right-1 w-3 h-3 border-2 border-white rounded-full ${
-                isOnline ? 'bg-green-500' : 'bg-gray-400'
+                isOnline ? 'bg-green-500 animate-pulse' : 'bg-gray-400'
               }`}></div>
             </div>
           )}
