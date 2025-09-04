@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Send, Users, Settings, ArrowLeft, Share, Mic, MicOff, Video, VideoOff, Smile, Search, Bell, BellOff, Phone, PhoneOff, Volume2, VolumeX, Hash, Zap, Clock, MessageCircle } from 'lucide-react';
+import { Send, Users, Settings, ArrowLeft, Share, Mic, MicOff, Video, VideoOff, Smile, Search, Bell, BellOff, Phone, PhoneOff, Volume2, VolumeX, Hash, Zap, Clock, MessageCircle, Wifi, WifiOff, RefreshCw, Activity } from 'lucide-react';
 import { Room, Message } from '../lib/supabase';
 import { useUser } from '../contexts/UserContext';
 import { useRealtimeMessages } from '../hooks/useRealtimeMessages';
@@ -30,27 +30,28 @@ export function ChatRoom({ room, onLeave }: ChatRoomProps) {
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [showVideoCall, setShowVideoCall] = useState(false);
-  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [lastMessageCount, setLastMessageCount] = useState(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
-  const lastMessageCountRef = useRef(0);
   const notificationSoundRef = useRef<HTMLAudioElement>();
 
-  const { messages, loading, sendMessage } = useRealtimeMessages(room.id);
+  const { messages, loading, connectionStatus, sendMessage, refetch } = useRealtimeMessages(room.id);
   const { typingUsers, startTyping, stopTyping } = useTypingIndicator(room.id, userName || '');
-  const { participants } = useRoomParticipants(room.id, userName || '');
-  const { onlineUsers } = usePresence(room.id, userName || '');
+  const { participants, participantCount, refetch: refetchParticipants } = useRoomParticipants(room.id, userName || '');
+  const { onlineUsers, connectionStatus: presenceStatus } = usePresence(room.id, userName || '');
   const webRTC = useWebRTC(room.id, userName || '');
 
   // Initialize notification sound
   useEffect(() => {
-    notificationSoundRef.current = new Audio('data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdJivrJBhNjVgodDbq2EcBj+a2/LDciUFLIHO8tiJNwgZaLvt559NEAxQp+PwtmMcBjiR1/LMeSwFJHfH8N2QQAoUXrTp66hVFApGn+DyvmwhBSuBzvLZiTYIG2m98OScTgwOUarm7blmGgU7k9n1unEiBC13yO/eizEIHWq+8+OWT');
+    const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+    notificationSoundRef.current = new Audio();
+    notificationSoundRef.current.volume = 0.3;
   }, []);
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
-    if (messages.length > lastMessageCountRef.current) {
+    if (messages.length > lastMessageCount) {
       scrollToBottom();
       
       // Play notification sound for new messages from others
@@ -61,9 +62,9 @@ export function ChatRoom({ room, onLeave }: ChatRoomProps) {
         }
       }
       
-      lastMessageCountRef.current = messages.length;
+      setLastMessageCount(messages.length);
     }
-  }, [messages.length, userName, notifications, soundEnabled]);
+  }, [messages.length, userName, notifications, soundEnabled, lastMessageCount]);
 
   // Auto-focus input when component mounts
   useEffect(() => {
@@ -73,30 +74,40 @@ export function ChatRoom({ room, onLeave }: ChatRoomProps) {
     return () => clearTimeout(timer);
   }, []);
 
+  // Auto-refresh data every 10 seconds
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (connectionStatus === 'disconnected') {
+        console.log('🔄 Connection lost, refreshing...');
+        refetch();
+        refetchParticipants();
+      }
+    }, 10000);
+
+    return () => clearInterval(interval);
+  }, [connectionStatus, refetch, refetchParticipants]);
+
   const playNotificationSound = () => {
-    if (notificationSoundRef.current && soundEnabled) {
-      notificationSoundRef.current.currentTime = 0;
-      notificationSoundRef.current.play().catch(() => {
-        // Fallback to Web Audio API
-        try {
-          const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-          const oscillator = audioContext.createOscillator();
-          const gainNode = audioContext.createGain();
-          
-          oscillator.connect(gainNode);
-          gainNode.connect(audioContext.destination);
-          
-          oscillator.frequency.setValueAtTime(800, audioContext.currentTime);
-          oscillator.frequency.setValueAtTime(600, audioContext.currentTime + 0.1);
-          gainNode.gain.setValueAtTime(0.1, audioContext.currentTime);
-          gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.2);
-          
-          oscillator.start(audioContext.currentTime);
-          oscillator.stop(audioContext.currentTime + 0.2);
-        } catch (error) {
-          console.error('Error playing notification sound:', error);
-        }
-      });
+    if (!soundEnabled) return;
+    
+    try {
+      // Create a simple notification sound using Web Audio API
+      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const oscillator = audioContext.createOscillator();
+      const gainNode = audioContext.createGain();
+      
+      oscillator.connect(gainNode);
+      gainNode.connect(audioContext.destination);
+      
+      oscillator.frequency.setValueAtTime(800, audioContext.currentTime);
+      oscillator.frequency.setValueAtTime(600, audioContext.currentTime + 0.1);
+      gainNode.gain.setValueAtTime(0.1, audioContext.currentTime);
+      gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.2);
+      
+      oscillator.start(audioContext.currentTime);
+      oscillator.stop(audioContext.currentTime + 0.2);
+    } catch (error) {
+      console.error('Error playing notification sound:', error);
     }
   };
 
@@ -207,6 +218,26 @@ export function ChatRoom({ room, onLeave }: ChatRoomProps) {
   const onlineParticipants = participants.filter(p => getOnlineStatus(p.user_name));
   const offlineParticipants = participants.filter(p => !getOnlineStatus(p.user_name));
 
+  const getConnectionStatusColor = () => {
+    if (connectionStatus === 'connected' && presenceStatus === 'connected') {
+      return 'text-green-600 bg-green-100';
+    } else if (connectionStatus === 'connecting' || presenceStatus === 'connecting') {
+      return 'text-yellow-600 bg-yellow-100';
+    } else {
+      return 'text-red-600 bg-red-100';
+    }
+  };
+
+  const getConnectionStatusText = () => {
+    if (connectionStatus === 'connected' && presenceStatus === 'connected') {
+      return 'Connected';
+    } else if (connectionStatus === 'connecting' || presenceStatus === 'connecting') {
+      return 'Connecting...';
+    } else {
+      return 'Disconnected';
+    }
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center">
@@ -220,8 +251,8 @@ export function ChatRoom({ room, onLeave }: ChatRoomProps) {
   }
 
   return (
-    <div className={`min-h-screen bg-gradient-to-br from-slate-50 to-blue-50 flex flex-col ${isFullscreen ? 'fixed inset-0 z-50' : ''}`}>
-      {/* Enhanced Header */}
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-blue-50 flex flex-col">
+      {/* Enhanced Header with Connection Status */}
       <div className="bg-white/95 backdrop-blur-md shadow-lg border-b border-gray-200 sticky top-0 z-20">
         <div className="flex items-center justify-between max-w-7xl mx-auto px-4 py-4">
           <div className="flex items-center gap-4">
@@ -240,11 +271,16 @@ export function ChatRoom({ room, onLeave }: ChatRoomProps) {
                 <h1 className="text-xl font-bold text-gray-900">{currentRoom.name}</h1>
                 <div className="flex items-center gap-4 text-sm text-gray-500">
                   <div className="flex items-center gap-1">
-                    <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                    <div className={`w-2 h-2 rounded-full ${getConnectionStatusColor().includes('green') ? 'bg-green-500 animate-pulse' : getConnectionStatusColor().includes('yellow') ? 'bg-yellow-500 animate-pulse' : 'bg-red-500'}`}></div>
+                    <span className={`font-medium ${getConnectionStatusColor().split(' ')[0]}`}>
+                      {getConnectionStatusText()}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1">
                     <Users className="w-4 h-4" />
                     <span className="font-medium text-green-600">{onlineParticipants.length}</span>
                     <span>/</span>
-                    <span>{participants.length} members</span>
+                    <span>{participantCount} members</span>
                   </div>
                   <div className="flex items-center gap-1">
                     <MessageCircle className="w-4 h-4" />
@@ -257,6 +293,28 @@ export function ChatRoom({ room, onLeave }: ChatRoomProps) {
           </div>
 
           <div className="flex items-center gap-2">
+            {/* Connection Status Indicator */}
+            <div className={`flex items-center gap-2 px-3 py-1 rounded-full text-xs font-medium ${getConnectionStatusColor()}`}>
+              {connectionStatus === 'connected' && presenceStatus === 'connected' ? (
+                <Wifi className="w-3 h-3" />
+              ) : (
+                <WifiOff className="w-3 h-3" />
+              )}
+              <span>{getConnectionStatusText()}</span>
+            </div>
+
+            {/* Manual Refresh */}
+            <button
+              onClick={() => {
+                refetch();
+                refetchParticipants();
+              }}
+              className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+              title="Refresh data"
+            >
+              <RefreshCw className="w-4 h-4" />
+            </button>
+
             {/* Search */}
             <button
               onClick={() => setShowSearch(!showSearch)}
@@ -509,7 +567,7 @@ export function ChatRoom({ room, onLeave }: ChatRoomProps) {
             <div className="flex items-center justify-between mb-2">
               <h3 className="font-semibold text-gray-900 flex items-center gap-2">
                 <Users className="w-5 h-5" />
-                Members ({participants.length})
+                Members ({participantCount})
               </h3>
               <div className="flex items-center gap-1">
                 <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
@@ -519,6 +577,7 @@ export function ChatRoom({ room, onLeave }: ChatRoomProps) {
             <div className="flex gap-4 text-xs text-gray-500">
               <span>Active: {onlineParticipants.length}</span>
               <span>Away: {offlineParticipants.length}</span>
+              <span>Total: {participantCount}</span>
             </div>
           </div>
           
@@ -681,6 +740,13 @@ export function ChatRoom({ room, onLeave }: ChatRoomProps) {
                      onlineParticipants.length > 2 ? 'High' :
                      onlineParticipants.length > 0 ? 'Active' : 'Quiet'}
                   </span>
+                </div>
+              </div>
+              <div className="flex justify-between items-center">
+                <span>Connection:</span>
+                <div className={`flex items-center gap-1 px-2 py-1 rounded-full ${getConnectionStatusColor()}`}>
+                  <Activity className="w-3 h-3" />
+                  <span className="font-medium text-xs">{getConnectionStatusText()}</span>
                 </div>
               </div>
               <div className="flex justify-between items-center">

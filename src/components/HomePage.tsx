@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, MessageCircle, Users, RefreshCw as Refresh, Zap, Globe, TrendingUp, Clock, Star, Activity, Wifi, WifiOff } from 'lucide-react';
+import { Plus, MessageCircle, Users, RefreshCw as Refresh, Zap, Globe, TrendingUp, Clock, Star, Activity, Wifi, WifiOff, Search, Filter } from 'lucide-react';
 import { supabase, Room } from '../lib/supabase';
 import { useUser } from '../contexts/UserContext';
 import { RoomCard } from './RoomCard';
@@ -25,6 +25,8 @@ export function HomePage() {
   const [filter, setFilter] = useState<'all' | 'public' | 'password' | 'active'>('all');
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [lastUpdate, setLastUpdate] = useState(new Date());
+  const [searchQuery, setSearchQuery] = useState('');
+  const [connectionStatus, setConnectionStatus] = useState<'connected' | 'connecting' | 'disconnected'>('connecting');
 
   useEffect(() => {
     loadRooms();
@@ -32,7 +34,7 @@ export function HomePage() {
     
     // Set up real-time subscriptions with better error handling
     const roomsChannel = supabase
-      .channel('rooms-changes')
+      .channel(`rooms_changes_${Date.now()}`)
       .on(
         'postgres_changes',
         {
@@ -40,7 +42,8 @@ export function HomePage() {
           schema: 'public',
           table: 'rooms',
         },
-        () => {
+        (payload) => {
+          console.log('🏠 Room change:', payload);
           loadRooms();
           loadStats();
           setLastUpdate(new Date());
@@ -53,28 +56,38 @@ export function HomePage() {
           schema: 'public',
           table: 'room_participants',
         },
-        () => {
+        (payload) => {
+          console.log('👥 Participants change:', payload);
           loadRooms();
           setLastUpdate(new Date());
         }
       )
-      .subscribe();
+      .subscribe((status) => {
+        console.log('🔌 Rooms subscription status:', status);
+        setConnectionStatus(status === 'SUBSCRIBED' ? 'connected' : 
+                          status === 'CONNECTING' ? 'connecting' : 'disconnected');
+      });
 
-    // Auto-refresh every 30 seconds
+    // Auto-refresh every 15 seconds
     const refreshInterval = setInterval(() => {
+      console.log('🔄 Auto-refreshing rooms...');
       loadRooms();
       loadStats();
       setLastUpdate(new Date());
-    }, 30000);
+    }, 15000);
 
     // Network status monitoring
     const handleOnline = () => {
       setIsOnline(true);
+      setConnectionStatus('connecting');
       loadRooms();
       loadStats();
     };
     
-    const handleOffline = () => setIsOnline(false);
+    const handleOffline = () => {
+      setIsOnline(false);
+      setConnectionStatus('disconnected');
+    };
 
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
@@ -99,6 +112,8 @@ export function HomePage() {
 
   const loadRooms = async () => {
     try {
+      setConnectionStatus('connecting');
+      
       // Load public and password-protected rooms
       const { data, error } = await supabase
         .from('rooms')
@@ -126,12 +141,15 @@ export function HomePage() {
 
       setRooms(roomsWithCounts);
       setTotalUsers(roomsWithCounts.reduce((sum, room) => sum + room.current_users, 0));
+      setConnectionStatus('connected');
+      console.log(`✅ Loaded ${roomsWithCounts.length} rooms`);
     } catch (error) {
-      console.error('Error loading rooms:', error);
+      console.error('❌ Error loading rooms:', error);
+      setConnectionStatus('disconnected');
       
       // Show error toast
       const toast = document.createElement('div');
-      toast.className = 'fixed top-4 right-4 bg-red-500 text-white px-4 py-2 rounded-lg shadow-lg z-50';
+      toast.className = 'fixed top-4 right-4 bg-red-500 text-white px-4 py-2 rounded-lg shadow-lg z-50 animate-in slide-in-from-top-2';
       toast.textContent = 'Failed to load rooms';
       document.body.appendChild(toast);
       setTimeout(() => {
@@ -199,9 +217,16 @@ export function HomePage() {
   };
 
   const filteredRooms = rooms.filter(room => {
-    if (filter === 'all') return true;
-    if (filter === 'active') return room.current_users > 0;
-    return room.type === filter;
+    const matchesSearch = !searchQuery || 
+      room.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      room.description?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      room.created_by.toLowerCase().includes(searchQuery.toLowerCase());
+    
+    const matchesFilter = filter === 'all' || 
+      (filter === 'active' && room.current_users > 0) ||
+      room.type === filter;
+    
+    return matchesSearch && matchesFilter;
   });
 
   const getActivityLevel = () => {
@@ -214,6 +239,16 @@ export function HomePage() {
   };
 
   const activityLevel = getActivityLevel();
+
+  const getConnectionColor = () => {
+    if (connectionStatus === 'connected' && isOnline) {
+      return 'text-green-600 bg-green-100';
+    } else if (connectionStatus === 'connecting') {
+      return 'text-yellow-600 bg-yellow-100';
+    } else {
+      return 'text-red-600 bg-red-100';
+    }
+  };
 
   if (currentRoom) {
     return <ChatRoom room={currentRoom} onLeave={handleLeaveRoom} />;
@@ -236,17 +271,16 @@ export function HomePage() {
                 <div className="flex items-center gap-4 text-gray-600">
                   <p>Connect with people worldwide in real-time</p>
                   <div className="flex items-center gap-2">
-                    {isOnline ? (
-                      <div className="flex items-center gap-1 text-green-600">
-                        <Wifi className="w-4 h-4" />
-                        <span className="text-sm font-medium">Online</span>
-                      </div>
-                    ) : (
-                      <div className="flex items-center gap-1 text-red-600">
-                        <WifiOff className="w-4 h-4" />
-                        <span className="text-sm font-medium">Offline</span>
-                      </div>
-                    )}
+                    <div className={`flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium ${getConnectionColor()}`}>
+                      {isOnline && connectionStatus === 'connected' ? (
+                        <Wifi className="w-3 h-3" />
+                      ) : (
+                        <WifiOff className="w-3 h-3" />
+                      )}
+                      <span>
+                        {isOnline ? (connectionStatus === 'connected' ? 'Online' : 'Connecting...') : 'Offline'}
+                      </span>
+                    </div>
                     <span className="text-xs text-gray-400">
                       Updated {lastUpdate.toLocaleTimeString()}
                     </span>
@@ -341,32 +375,48 @@ export function HomePage() {
           </div>
         </div>
 
-        {/* Filter Tabs */}
-        <div className="flex items-center gap-2 mb-6">
-          {[
-            { key: 'all', label: 'All Rooms', icon: Globe, count: rooms.length },
-            { key: 'active', label: 'Active', icon: Zap, count: rooms.filter(r => r.current_users > 0).length },
-            { key: 'public', label: 'Public', icon: Globe, count: rooms.filter(r => r.type === 'public').length },
-            { key: 'password', label: 'Protected', icon: Star, count: rooms.filter(r => r.type === 'password').length }
-          ].map(({ key, label, icon: Icon, count }) => (
-            <button
-              key={key}
-              onClick={() => setFilter(key as any)}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-all duration-200 ${
-                filter === key
-                  ? 'bg-blue-600 text-white shadow-md'
-                  : 'bg-white/70 text-gray-600 hover:bg-white hover:shadow-sm'
-              }`}
-            >
-              <Icon className="w-4 h-4" />
-              <span className="text-sm font-medium">{label}</span>
-              <span className={`text-xs px-2 py-0.5 rounded-full ${
-                filter === key ? 'bg-white/20' : 'bg-gray-100'
-              }`}>
-                {count}
-              </span>
-            </button>
-          ))}
+        {/* Search and Filter Bar */}
+        <div className="bg-white/70 backdrop-blur-sm rounded-xl p-4 border shadow-sm mb-6">
+          <div className="flex flex-col sm:flex-row gap-4 items-center">
+            <div className="flex-1 relative">
+              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search rooms by name, description, or creator..."
+                className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
+              />
+            </div>
+            
+            <div className="flex items-center gap-2">
+              <Filter className="w-4 h-4 text-gray-500" />
+              {[
+                { key: 'all', label: 'All', icon: Globe, count: rooms.length },
+                { key: 'active', label: 'Active', icon: Zap, count: rooms.filter(r => r.current_users > 0).length },
+                { key: 'public', label: 'Public', icon: Globe, count: rooms.filter(r => r.type === 'public').length },
+                { key: 'password', label: 'Protected', icon: Star, count: rooms.filter(r => r.type === 'password').length }
+              ].map(({ key, label, icon: Icon, count }) => (
+                <button
+                  key={key}
+                  onClick={() => setFilter(key as any)}
+                  className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-all duration-200 text-sm ${
+                    filter === key
+                      ? 'bg-blue-600 text-white shadow-md'
+                      : 'bg-white text-gray-600 hover:bg-gray-50 hover:shadow-sm border'
+                  }`}
+                >
+                  <Icon className="w-4 h-4" />
+                  <span className="font-medium">{label}</span>
+                  <span className={`text-xs px-2 py-0.5 rounded-full ${
+                    filter === key ? 'bg-white/20' : 'bg-gray-100'
+                  }`}>
+                    {count}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
 
         {/* Room Grid */}
@@ -379,12 +429,16 @@ export function HomePage() {
             </h2>
             <div className="flex items-center gap-4">
               <p className="text-gray-600">{filteredRooms.length} rooms available</p>
-              {!isOnline && (
-                <div className="flex items-center gap-1 text-red-600 bg-red-50 px-3 py-1 rounded-full border border-red-200">
-                  <WifiOff className="w-4 h-4" />
-                  <span className="text-sm">Offline</span>
-                </div>
-              )}
+              <div className={`flex items-center gap-1 px-3 py-1 rounded-full text-xs font-medium ${getConnectionColor()}`}>
+                {isOnline && connectionStatus === 'connected' ? (
+                  <Wifi className="w-3 h-3" />
+                ) : (
+                  <WifiOff className="w-3 h-3" />
+                )}
+                <span>
+                  {isOnline ? (connectionStatus === 'connected' ? 'Live' : 'Syncing...') : 'Offline'}
+                </span>
+              </div>
             </div>
           </div>
 
@@ -412,10 +466,10 @@ export function HomePage() {
             <div className="text-center py-12">
               <MessageCircle className="w-16 h-16 text-gray-400 mx-auto mb-4" />
               <h3 className="text-xl font-semibold text-gray-900 mb-2">
-                {filter === 'all' ? 'No rooms available' : `No ${filter} rooms found`}
+                {searchQuery ? 'No rooms found' : filter === 'all' ? 'No rooms available' : `No ${filter} rooms found`}
               </h3>
               <p className="text-gray-600 mb-6">
-                {filter === 'all' ? 'Be the first to create a chat room!' : 'Try a different filter or create a new room'}
+                {searchQuery ? 'Try a different search term' : filter === 'all' ? 'Be the first to create a chat room!' : 'Try a different filter or create a new room'}
               </p>
               <button
                 onClick={() => setShowCreateModal(true)}

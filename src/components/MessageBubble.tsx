@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Copy, Reply, Heart, ThumbsUp, MoreVertical, Check, CheckCheck, Clock } from 'lucide-react';
+import { Copy, Reply, Heart, ThumbsUp, MoreVertical, Check, CheckCheck, Clock, Trash2 } from 'lucide-react';
 import { Message } from '../lib/supabase';
 
 interface MessageBubbleProps {
@@ -27,6 +27,8 @@ export function MessageBubble({
   const [reactions, setReactions] = useState<{[key: string]: number}>({});
   const [showTime, setShowTime] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [liked, setLiked] = useState(false);
+  const [loved, setLoved] = useState(false);
   const isTemp = message.id.startsWith('temp-');
 
   const copyMessage = async () => {
@@ -57,13 +59,17 @@ export function MessageBubble({
       [emoji]: (prev[emoji] || 0) + 1
     }));
 
+    if (emoji === '👍') setLiked(!liked);
+    if (emoji === '❤️') setLoved(!loved);
+
     // Show reaction animation
     const reactionEl = document.createElement('div');
-    reactionEl.className = 'fixed pointer-events-none text-2xl animate-bounce z-50';
+    reactionEl.className = 'fixed pointer-events-none text-3xl z-50 animate-bounce';
     reactionEl.textContent = emoji;
     reactionEl.style.left = '50%';
     reactionEl.style.top = '50%';
     reactionEl.style.transform = 'translate(-50%, -50%)';
+    reactionEl.style.animation = 'reactionPop 1s ease-out forwards';
     document.body.appendChild(reactionEl);
     
     setTimeout(() => {
@@ -72,6 +78,16 @@ export function MessageBubble({
       }
     }, 1000);
   };
+
+  const getDeliveryStatus = () => {
+    if (isTemp) {
+      return { icon: Clock, color: 'text-gray-400', label: 'Sending...' };
+    } else {
+      return { icon: CheckCheck, color: 'text-green-500', label: 'Delivered' };
+    }
+  };
+
+  const deliveryStatus = getDeliveryStatus();
 
   return (
     <div
@@ -123,20 +139,20 @@ export function MessageBubble({
                     e.stopPropagation();
                     addReaction('👍');
                   }}
-                  className="p-1.5 bg-white/95 backdrop-blur-sm rounded-full shadow-lg hover:bg-white hover:scale-110 transition-all duration-200 border"
+                  className={`p-1.5 bg-white/95 backdrop-blur-sm rounded-full shadow-lg hover:bg-white hover:scale-110 transition-all duration-200 border ${liked ? 'bg-blue-100 border-blue-300' : ''}`}
                   title="Like"
                 >
-                  <ThumbsUp className="w-3 h-3 text-gray-600" />
+                  <ThumbsUp className={`w-3 h-3 ${liked ? 'text-blue-600' : 'text-gray-600'}`} />
                 </button>
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
                     addReaction('❤️');
                   }}
-                  className="p-1.5 bg-white/95 backdrop-blur-sm rounded-full shadow-lg hover:bg-white hover:scale-110 transition-all duration-200 border"
+                  className={`p-1.5 bg-white/95 backdrop-blur-sm rounded-full shadow-lg hover:bg-white hover:scale-110 transition-all duration-200 border ${loved ? 'bg-red-100 border-red-300' : ''}`}
                   title="Love"
                 >
-                  <Heart className="w-3 h-3 text-red-500" />
+                  <Heart className={`w-3 h-3 ${loved ? 'text-red-500' : 'text-red-500'}`} />
                 </button>
                 <button
                   onClick={(e) => {
@@ -169,11 +185,7 @@ export function MessageBubble({
                 <div className={`w-4 h-4 rounded-full border-2 border-white shadow-sm flex items-center justify-center ${
                   isTemp ? 'bg-gray-400 animate-pulse' : 'bg-green-500'
                 }`}>
-                  {isTemp ? (
-                    <Clock className="w-2 h-2 text-white" />
-                  ) : (
-                    <CheckCheck className="w-2.5 h-2.5 text-white" />
-                  )}
+                  <deliveryStatus.icon className={`w-2.5 h-2.5 text-white`} />
                 </div>
               </div>
             )}

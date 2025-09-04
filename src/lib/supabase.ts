@@ -6,7 +6,7 @@ const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || 'YOUR_SUPABASE
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   realtime: {
     params: {
-      eventsPerSecond: 50,
+      eventsPerSecond: 100,
     },
   },
   auth: {
@@ -63,5 +63,17 @@ export interface UserPresence {
 export const realtimeState = {
   channels: new Map(),
   subscriptions: new Set(),
-  isConnected: false
+  isConnected: false,
+  reconnectAttempts: 0,
+  maxReconnectAttempts: 5
+};
+
+// Connection health checker
+export const checkConnection = async () => {
+  try {
+    const { data, error } = await supabase.from('rooms').select('id').limit(1);
+    return !error;
+  } catch {
+    return false;
+  }
 };
