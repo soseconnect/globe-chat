@@ -6,9 +6,12 @@ const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || 'YOUR_SUPABASE
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   realtime: {
     params: {
-      eventsPerSecond: 10,
+      eventsPerSecond: 50,
     },
   },
+  auth: {
+    persistSession: false
+  }
 });
 
 export type RoomType = 'public' | 'private' | 'password';
@@ -55,3 +58,10 @@ export interface UserPresence {
   last_seen: string;
   current_room_id?: string;
 }
+
+// Global state for real-time updates
+export const realtimeState = {
+  channels: new Map(),
+  subscriptions: new Set(),
+  isConnected: false
+};

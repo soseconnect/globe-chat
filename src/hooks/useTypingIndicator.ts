@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { supabase } from '../lib/supabase';
+import { supabase, realtimeState } from '../lib/supabase';
 
 export function useTypingIndicator(roomId: string, userName: string) {
   const [typingUsers, setTypingUsers] = useState<string[]>([]);
@@ -19,7 +19,11 @@ export function useTypingIndicator(roomId: string, userName: string) {
           user_name: userName,
           is_typing: typing,
           last_typed: new Date().toISOString()
+        }, {
+          onConflict: 'room_id,user_name'
         });
+      
+      console.log(`${userName} typing status: ${typing}`);
     } catch (error) {
       console.error('Error updating typing status:', error);
     }
@@ -36,11 +40,11 @@ export function useTypingIndicator(roomId: string, userName: string) {
       clearTimeout(typingTimeoutRef.current);
     }
 
-    // Stop typing after 2 seconds of inactivity
+    // Stop typing after 3 seconds of inactivity
     typingTimeoutRef.current = setTimeout(() => {
       setIsTyping(false);
       updateTypingStatus(false);
-    }, 2000);
+    }, 3000);
   }, [isTyping, updateTypingStatus]);
 
   const stopTyping = useCallback(() => {
@@ -55,6 +59,8 @@ export function useTypingIndicator(roomId: string, userName: string) {
   }, [isTyping, updateTypingStatus]);
 
   const loadTypingUsers = useCallback(async () => {
+    if (!roomId) return;
+    
     try {
       const { data, error } = await supabase
         .from('typing_indicators')
@@ -65,11 +71,12 @@ export function useTypingIndicator(roomId: string, userName: string) {
 
       if (error) throw error;
 
+      // Filter out stale typing indicators (older than 5 seconds)
+      const now = new Date();
       const activeTypers = (data || [])
         .filter(indicator => {
           const lastTyped = new Date(indicator.last_typed);
-          const now = new Date();
-          return (now.getTime() - lastTyped.getTime()) < 5000; // 5 seconds
+          return (now.getTime() - lastTyped.getTime()) < 5000;
         })
         .map(indicator => indicator.user_name);
 
@@ -82,6 +89,8 @@ export function useTypingIndicator(roomId: string, userName: string) {
   useEffect(() => {
     if (!roomId || !userName) return;
 
+    console.log('Setting up typing indicators for room:', roomId);
+
     loadTypingUsers();
 
     // Clean up existing channel
@@ -89,9 +98,10 @@ export function useTypingIndicator(roomId: string, userName: string) {
       supabase.removeChannel(channelRef.current);
     }
 
-    // Create new channel
+    // Create new typing subscription
+    const channelName = `typing:${roomId}:${Date.now()}`;
     channelRef.current = supabase
-      .channel(`typing_${roomId}_${Date.now()}`)
+      .channel(channelName)
       .on(
         'postgres_changes',
         {
@@ -101,7 +111,9 @@ export function useTypingIndicator(roomId: string, userName: string) {
           filter: `room_id=eq.${roomId}`,
         },
         (payload) => {
+          console.log('Typing indicator change:', payload);
           const indicator = payload.new || payload.old;
+          
           if (!indicator || indicator.user_name === userName) return;
 
           if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
@@ -120,12 +132,16 @@ export function useTypingIndicator(roomId: string, userName: string) {
           }
         }
       )
-      .subscribe();
+      .subscribe((status) => {
+        console.log('Typing subscription status:', status);
+      });
 
-    // Clean up old typing indicators every 10 seconds
+    // Clean up old typing indicators every 5 seconds
     cleanupTimeoutRef.current = setInterval(() => {
       loadTypingUsers();
-    }, 10000);
+    }, 5000);
+
+    realtimeState.channels.set(channelName, channelRef.current);
 
     return () => {
       if (channelRef.current) {
