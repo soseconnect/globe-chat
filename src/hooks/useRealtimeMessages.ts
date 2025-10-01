@@ -9,12 +9,15 @@ export function useRealtimeMessages(roomId: string) {
   const channelRef = useRef<any>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout>();
   const refreshIntervalRef = useRef<NodeJS.Timeout>();
+  const isInitializedRef = useRef(false);
 
   const loadMessages = useCallback(async () => {
     if (!roomId) return;
     
     try {
       setError(null);
+      console.log(`📥 Loading messages for room: ${roomId}`);
+      
       const { data, error } = await supabase
         .from('messages')
         .select('*')
@@ -22,13 +25,16 @@ export function useRealtimeMessages(roomId: string) {
         .order('created_at', { ascending: true })
         .limit(500);
 
-      if (error) throw error;
+      if (error) {
+        console.error('❌ Error loading messages:', error);
+        throw error;
+      }
       
       setMessages(data || []);
       setConnectionStatus('connected');
-      console.log(`✅ Loaded ${data?.length || 0} messages for room ${roomId}`);
-    } catch (error) {
-      console.error('❌ Error loading messages:', error);
+      console.log(`✅ Loaded ${data?.length || 0} messages`);
+    } catch (err) {
+      console.error('❌ Failed to load messages:', err);
       setError('Failed to load messages');
       setConnectionStatus('disconnected');
     } finally {
@@ -41,6 +47,7 @@ export function useRealtimeMessages(roomId: string) {
 
     // Clean up existing subscription
     if (channelRef.current) {
+      console.log('🧹 Cleaning up existing subscription');
       supabase.removeChannel(channelRef.current);
       channelRef.current = null;
     }
@@ -63,18 +70,19 @@ export function useRealtimeMessages(roomId: string) {
           const newMessage = payload.new as Message;
           
           setMessages(prev => {
+            // Check if message already exists
+            if (prev.some(msg => msg.id === newMessage.id)) {
+              console.log('⚠️ Message already exists, skipping');
+              return prev;
+            }
+            
             // Remove any temporary message with same content and user
             const filtered = prev.filter(msg => 
               !(msg.id.startsWith('temp-') && 
                 msg.content === newMessage.content && 
                 msg.user_name === newMessage.user_name &&
-                Math.abs(new Date(msg.created_at).getTime() - new Date(newMessage.created_at).getTime()) < 5000)
+                Math.abs(new Date(msg.created_at).getTime() - new Date(newMessage.created_at).getTime()) < 10000)
             );
-            
-            // Check if message already exists
-            if (filtered.some(msg => msg.id === newMessage.id)) {
-              return prev;
-            }
             
             const updated = [...filtered, newMessage].sort((a, b) => 
               new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
@@ -93,14 +101,19 @@ export function useRealtimeMessages(roomId: string) {
         if (status === 'SUBSCRIBED') {
           setConnectionStatus('connected');
           setError(null);
+          console.log('✅ Real-time subscription active');
         } else if (status === 'CLOSED' || status === 'CHANNEL_ERROR') {
           setConnectionStatus('disconnected');
+          console.log('❌ Subscription failed, will reconnect...');
           
           // Reconnect after delay
+          if (reconnectTimeoutRef.current) {
+            clearTimeout(reconnectTimeoutRef.current);
+          }
           reconnectTimeoutRef.current = setTimeout(() => {
             console.log('🔄 Reconnecting messages subscription...');
             setupRealtimeSubscription();
-          }, 2000);
+          }, 3000);
         } else if (status === 'CONNECTING') {
           setConnectionStatus('connecting');
         }
@@ -109,7 +122,10 @@ export function useRealtimeMessages(roomId: string) {
   }, [roomId]);
 
   const sendMessage = useCallback(async (content: string, userName: string) => {
-    if (!content.trim() || !userName || !roomId) return;
+    if (!content.trim() || !userName || !roomId) {
+      console.log('⚠️ Invalid message data');
+      return;
+    }
 
     const tempId = `temp-${Date.now()}-${Math.random()}`;
     const now = new Date().toISOString();
@@ -124,8 +140,8 @@ export function useRealtimeMessages(roomId: string) {
       message_type: 'text'
     };
 
+    console.log(`📤 Sending message: "${content.substring(0, 50)}..."`);
     setMessages(prev => [...prev, tempMessage]);
-    console.log(`📤 Sending message: ${content.substring(0, 50)}...`);
 
     try {
       const { data, error } = await supabase
@@ -139,17 +155,20 @@ export function useRealtimeMessages(roomId: string) {
         .select()
         .single();
 
-      if (error) throw error;
+      if (error) {
+        console.error('❌ Error sending message:', error);
+        throw error;
+      }
 
-      console.log(`✅ Message sent successfully:`, data);
+      console.log(`✅ Message sent successfully`);
 
       // Replace temp message with real one
       setMessages(prev => prev.map(msg => 
         msg.id === tempId ? data : msg
       ));
 
-    } catch (error) {
-      console.error('❌ Error sending message:', error);
+    } catch (err) {
+      console.error('❌ Failed to send message:', err);
       
       // Remove failed temp message
       setMessages(prev => prev.filter(msg => msg.id !== tempId));
@@ -157,18 +176,21 @@ export function useRealtimeMessages(roomId: string) {
       // Show error notification
       const toast = document.createElement('div');
       toast.className = 'fixed top-4 right-4 bg-red-500 text-white px-4 py-2 rounded-lg shadow-lg z-50 animate-in slide-in-from-top-2';
-      toast.textContent = 'Failed to send message';
+      toast.textContent = 'Failed to send message. Please try again.';
       document.body.appendChild(toast);
       setTimeout(() => {
         if (document.body.contains(toast)) {
           document.body.removeChild(toast);
         }
-      }, 3000);
+      }, 4000);
     }
   }, [roomId]);
 
   useEffect(() => {
-    if (!roomId) return;
+    if (!roomId) {
+      console.log('⚠️ No roomId provided');
+      return;
+    }
 
     console.log(`🚀 Initializing messages for room: ${roomId}`);
     
@@ -177,17 +199,23 @@ export function useRealtimeMessages(roomId: string) {
     setLoading(true);
     setError(null);
     setConnectionStatus('connecting');
+    isInitializedRef.current = false;
 
-    // Load initial messages
-    loadMessages();
+    // Initialize
+    const initialize = async () => {
+      await loadMessages();
+      setupRealtimeSubscription();
+      isInitializedRef.current = true;
+    };
 
-    // Setup real-time subscription
-    setupRealtimeSubscription();
+    initialize();
 
     // Auto-refresh every 30 seconds as backup
     refreshIntervalRef.current = setInterval(() => {
-      console.log('🔄 Auto-refreshing messages...');
-      loadMessages();
+      if (connectionStatus === 'disconnected') {
+        console.log('🔄 Auto-refreshing messages due to disconnection...');
+        loadMessages();
+      }
     }, 30000);
 
     return () => {
@@ -205,8 +233,10 @@ export function useRealtimeMessages(roomId: string) {
         supabase.removeChannel(channelRef.current);
         channelRef.current = null;
       }
+      
+      isInitializedRef.current = false;
     };
-  }, [roomId, loadMessages, setupRealtimeSubscription]);
+  }, [roomId, loadMessages, setupRealtimeSubscription, connectionStatus]);
 
   return { 
     messages, 

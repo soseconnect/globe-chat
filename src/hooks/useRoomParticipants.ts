@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { supabase, RoomParticipant, UserPresence, realtimeState } from '../lib/supabase';
+import { supabase, RoomParticipant } from '../lib/supabase';
 
 interface EnhancedParticipant extends RoomParticipant {
   is_online: boolean;
@@ -9,6 +9,7 @@ interface EnhancedParticipant extends RoomParticipant {
 export function useRoomParticipants(roomId: string, userName: string) {
   const [participants, setParticipants] = useState<EnhancedParticipant[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
   const channelRef = useRef<any>(null);
   const presenceChannelRef = useRef<any>(null);
   const heartbeatRef = useRef<NodeJS.Timeout>();
@@ -19,67 +20,49 @@ export function useRoomParticipants(roomId: string, userName: string) {
     if (!roomId) return;
     
     try {
-      // Get participants with presence data in one query
+      setError(null);
+      console.log(`👥 Loading participants for room: ${roomId}`);
+
+      // Get participants
       const { data: participantsData, error: participantsError } = await supabase
         .from('room_participants')
-        .select(`
-          *,
-          user_presence!inner(
-            is_online,
-            last_seen
-          )
-        `)
+        .select('*')
         .eq('room_id', roomId)
         .order('joined_at', { ascending: true });
 
       if (participantsError) {
-        // Fallback: get participants and presence separately
-        const { data: participants } = await supabase
-          .from('room_participants')
-          .select('*')
-          .eq('room_id', roomId);
-
-        const { data: presence } = await supabase
-          .from('user_presence')
-          .select('*');
-
-        const enhancedParticipants = (participants || []).map(p => {
-          const userPresence = presence?.find(pr => pr.user_name === p.user_name);
-          const isOnline = userPresence?.is_online && 
-            userPresence?.current_room_id === roomId &&
-            (new Date().getTime() - new Date(userPresence.last_seen).getTime()) < 60000;
-          
-          return {
-            ...p,
-            is_online: isOnline || false,
-            last_seen: userPresence?.last_seen || p.joined_at
-          };
-        });
-
-        setParticipants(enhancedParticipants);
-        return;
+        console.error('❌ Error loading participants:', participantsError);
+        throw participantsError;
       }
 
-      // Process joined data
+      // Get presence data
+      const { data: presenceData, error: presenceError } = await supabase
+        .from('user_presence')
+        .select('*');
+
+      if (presenceError) {
+        console.warn('⚠️ Error loading presence:', presenceError);
+      }
+
+      // Combine data
       const enhancedParticipants = (participantsData || []).map(p => {
-        const presence = (p as any).user_presence;
-        const isOnline = presence?.is_online && 
-          (new Date().getTime() - new Date(presence.last_seen).getTime()) < 60000;
+        const userPresence = presenceData?.find(pr => pr.user_name === p.user_name);
+        const isOnline = userPresence?.is_online && 
+          userPresence?.current_room_id === roomId &&
+          (new Date().getTime() - new Date(userPresence.last_seen).getTime()) < 120000; // 2 minutes
         
         return {
-          room_id: p.room_id,
-          user_name: p.user_name,
-          joined_at: p.joined_at,
-          is_admin: p.is_admin,
+          ...p,
           is_online: isOnline || false,
-          last_seen: presence?.last_seen || p.joined_at
+          last_seen: userPresence?.last_seen || p.joined_at
         };
       });
-      
+
       setParticipants(enhancedParticipants);
-      console.log(`Loaded ${enhancedParticipants.length} participants for room ${roomId}`);
-    } catch (error) {
-      console.error('Error loading participants:', error);
+      console.log(`✅ Loaded ${enhancedParticipants.length} participants`);
+    } catch (err) {
+      console.error('❌ Error loading participants:', err);
+      setError(err instanceof Error ? err : new Error('Failed to load participants'));
     } finally {
       setLoading(false);
     }
@@ -89,7 +72,9 @@ export function useRoomParticipants(roomId: string, userName: string) {
     if (!userName) return;
 
     try {
-      await supabase
+      console.log(`👤 Updating presence for ${userName}: ${isOnline ? 'online' : 'offline'}`);
+      
+      const { error } = await supabase
         .from('user_presence')
         .upsert({
           user_name: userName,
@@ -100,9 +85,15 @@ export function useRoomParticipants(roomId: string, userName: string) {
           onConflict: 'user_name'
         });
       
-      console.log(`Updated presence for ${userName}: ${isOnline ? 'online' : 'offline'}`);
-    } catch (error) {
-      console.error('Error updating presence:', error);
+      if (error) {
+        console.error('❌ Error updating presence:', error);
+        throw error;
+      }
+      
+      console.log(`✅ Presence updated for ${userName}`);
+    } catch (err) {
+      console.error('❌ Failed to update presence:', err);
+      setError(err instanceof Error ? err : new Error('Failed to update presence'));
     }
   }, [userName, roomId]);
 
@@ -110,6 +101,8 @@ export function useRoomParticipants(roomId: string, userName: string) {
     if (!userName || !roomId || isJoinedRef.current) return;
 
     try {
+      console.log(`🚪 ${userName} joining room ${roomId}`);
+      
       // Check if already a participant
       const { data: existing } = await supabase
         .from('room_participants')
@@ -119,20 +112,29 @@ export function useRoomParticipants(roomId: string, userName: string) {
         .single();
 
       if (!existing) {
-        await supabase
+        const { error } = await supabase
           .from('room_participants')
           .insert({
             room_id: roomId,
             user_name: userName,
             is_admin: false
           });
-        console.log(`${userName} joined room ${roomId}`);
+          
+        if (error) {
+          console.error('❌ Error joining room:', error);
+          throw error;
+        }
+        
+        console.log(`✅ ${userName} joined room ${roomId}`);
+      } else {
+        console.log(`ℹ️ ${userName} already in room ${roomId}`);
       }
 
       await updatePresence(true);
       isJoinedRef.current = true;
-    } catch (error) {
-      console.error('Error joining room:', error);
+    } catch (err) {
+      console.error('❌ Failed to join room:', err);
+      setError(err instanceof Error ? err : new Error('Failed to join room'));
     }
   }, [roomId, userName, updatePresence]);
 
@@ -140,21 +142,30 @@ export function useRoomParticipants(roomId: string, userName: string) {
     if (!userName || !roomId) return;
 
     try {
-      await supabase
+      console.log(`🚪 ${userName} leaving room ${roomId}`);
+      
+      const { error } = await supabase
         .from('room_participants')
         .delete()
         .match({ room_id: roomId, user_name: userName });
 
+      if (error) {
+        console.error('❌ Error leaving room:', error);
+        throw error;
+      }
+
       await updatePresence(false);
       isJoinedRef.current = false;
-      console.log(`${userName} left room ${roomId}`);
-    } catch (error) {
-      console.error('Error leaving room:', error);
+      console.log(`✅ ${userName} left room ${roomId}`);
+    } catch (err) {
+      console.error('❌ Failed to leave room:', err);
     }
   }, [roomId, userName, updatePresence]);
 
   const setupSubscriptions = useCallback(() => {
     if (!roomId || !userName) return;
+
+    console.log(`🔄 Setting up participants subscriptions for room: ${roomId}`);
 
     // Clean up existing subscriptions
     if (channelRef.current) {
@@ -165,7 +176,7 @@ export function useRoomParticipants(roomId: string, userName: string) {
     }
 
     // Participants subscription
-    const participantsChannelName = `participants:${roomId}:${Date.now()}`;
+    const participantsChannelName = `participants_${roomId}_${Date.now()}`;
     channelRef.current = supabase
       .channel(participantsChannelName)
       .on(
@@ -177,19 +188,22 @@ export function useRoomParticipants(roomId: string, userName: string) {
           filter: `room_id=eq.${roomId}`,
         },
         (payload) => {
-          console.log('Participants change:', payload);
+          console.log('👥 Participants change:', payload);
           loadParticipants();
         }
       )
       .subscribe((status) => {
-        console.log('Participants subscription status:', status);
+        console.log(`🔌 Participants subscription status: ${status}`);
         if (status === 'CLOSED' || status === 'CHANNEL_ERROR') {
-          reconnectTimeoutRef.current = setTimeout(setupSubscriptions, 2000);
+          if (reconnectTimeoutRef.current) {
+            clearTimeout(reconnectTimeoutRef.current);
+          }
+          reconnectTimeoutRef.current = setTimeout(setupSubscriptions, 3000);
         }
       });
 
     // Presence subscription
-    const presenceChannelName = `presence:${roomId}:${Date.now()}`;
+    const presenceChannelName = `presence_${roomId}_${Date.now()}`;
     presenceChannelRef.current = supabase
       .channel(presenceChannelName)
       .on(
@@ -200,29 +214,30 @@ export function useRoomParticipants(roomId: string, userName: string) {
           table: 'user_presence',
         },
         (payload) => {
-          console.log('Presence change:', payload);
+          console.log('👤 Presence change:', payload);
           loadParticipants();
         }
       )
       .subscribe((status) => {
-        console.log('Presence subscription status:', status);
+        console.log(`🔌 Presence subscription status: ${status}`);
       });
-
-    realtimeState.channels.set(participantsChannelName, channelRef.current);
-    realtimeState.channels.set(presenceChannelName, presenceChannelRef.current);
   }, [roomId, userName, loadParticipants]);
 
   useEffect(() => {
-    if (!roomId || !userName) return;
+    if (!roomId || !userName) {
+      console.log('⚠️ Missing roomId or userName');
+      return;
+    }
 
-    console.log('Initializing participants for room:', roomId);
+    console.log(`🚀 Initializing participants for room: ${roomId}, user: ${userName}`);
     
     // Reset state
     setParticipants([]);
     setLoading(true);
+    setError(null);
     isJoinedRef.current = false;
 
-    // Join room and setup everything
+    // Initialize
     const initialize = async () => {
       await joinRoom();
       await loadParticipants();
@@ -231,10 +246,10 @@ export function useRoomParticipants(roomId: string, userName: string) {
 
     initialize();
 
-    // Set up presence heartbeat every 15 seconds
+    // Set up presence heartbeat every 30 seconds
     heartbeatRef.current = setInterval(() => {
       updatePresence(true);
-    }, 15000);
+    }, 30000);
 
     // Handle page visibility changes
     const handleVisibilityChange = () => {
@@ -255,7 +270,7 @@ export function useRoomParticipants(roomId: string, userName: string) {
     window.addEventListener('beforeunload', handleBeforeUnload);
 
     return () => {
-      console.log('Cleaning up participants subscription');
+      console.log('🧹 Cleaning up participants subscription');
       
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
@@ -282,5 +297,13 @@ export function useRoomParticipants(roomId: string, userName: string) {
     };
   }, [roomId, userName, joinRoom, leaveRoom, loadParticipants, updatePresence, setupSubscriptions]);
 
-  return { participants, loading, error, refetch: loadParticipants };
+  const participantCount = participants.length;
+
+  return { 
+    participants, 
+    participantCount,
+    loading, 
+    error, 
+    refetch: loadParticipants 
+  };
 }

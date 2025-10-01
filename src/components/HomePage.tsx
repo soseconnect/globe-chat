@@ -27,6 +27,7 @@ export function HomePage() {
   const [lastUpdate, setLastUpdate] = useState(new Date());
   const [searchQuery, setSearchQuery] = useState('');
   const [connectionStatus, setConnectionStatus] = useState<'connected' | 'connecting' | 'disconnected'>('connecting');
+  const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => {
     loadRooms();
@@ -112,6 +113,7 @@ export function HomePage() {
 
   const loadRooms = async () => {
     try {
+      setRefreshing(true);
       setConnectionStatus('connecting');
       
       // Load public and password-protected rooms
@@ -159,6 +161,7 @@ export function HomePage() {
       }, 3000);
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   };
 
@@ -307,11 +310,15 @@ export function HomePage() {
               </button>
 
               <button
-                onClick={loadRooms}
+                onClick={() => {
+                  loadRooms();
+                  loadStats();
+                }}
+                disabled={refreshing}
                 className="p-2 bg-white text-gray-600 rounded-lg hover:bg-gray-50 transition-colors shadow-md border"
                 title="Refresh rooms"
               >
-                <Refresh className="w-4 h-4" />
+                <Refresh className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
               </button>
             </div>
           </div>

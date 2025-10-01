@@ -7,11 +7,14 @@ export function useTypingIndicator(roomId: string, userName: string) {
   const typingTimeoutRef = useRef<NodeJS.Timeout>();
   const channelRef = useRef<any>(null);
   const cleanupTimeoutRef = useRef<NodeJS.Timeout>();
+  const refreshRef = useRef<NodeJS.Timeout>();
 
   const updateTypingStatus = useCallback(async (typing: boolean) => {
     if (!userName || !roomId) return;
 
     try {
+      console.log(`⌨️ ${userName} typing: ${typing}`);
+      
       const { error } = await supabase
         .from('typing_indicators')
         .upsert({
@@ -23,10 +26,12 @@ export function useTypingIndicator(roomId: string, userName: string) {
           onConflict: 'room_id,user_name'
         });
       
-      if (error) throw error;
-      console.log(`⌨️ ${userName} typing: ${typing}`);
-    } catch (error) {
-      console.error('Error updating typing status:', error);
+      if (error) {
+        console.error('❌ Error updating typing status:', error);
+        throw error;
+      }
+    } catch (err) {
+      console.error('❌ Failed to update typing status:', err);
     }
   }, [userName, roomId]);
 
@@ -41,21 +46,27 @@ export function useTypingIndicator(roomId: string, userName: string) {
         .eq('is_typing', true)
         .neq('user_name', userName);
 
-      if (error) throw error;
+      if (error) {
+        console.error('❌ Error loading typing users:', error);
+        throw error;
+      }
 
-      // Filter out stale typing indicators (older than 5 seconds)
+      // Filter out stale typing indicators (older than 10 seconds)
       const now = new Date();
       const activeTypers = (data || [])
         .filter(indicator => {
           const lastTyped = new Date(indicator.last_typed);
-          return (now.getTime() - lastTyped.getTime()) < 5000;
+          return (now.getTime() - lastTyped.getTime()) < 10000;
         })
         .map(indicator => indicator.user_name);
 
       setTypingUsers(activeTypers);
-      console.log(`⌨️ Active typers: ${activeTypers.join(', ')}`);
-    } catch (error) {
-      console.error('Error loading typing users:', error);
+      
+      if (activeTypers.length > 0) {
+        console.log(`⌨️ Active typers: ${activeTypers.join(', ')}`);
+      }
+    } catch (err) {
+      console.error('❌ Failed to load typing users:', err);
     }
   }, [roomId, userName]);
 
@@ -70,11 +81,11 @@ export function useTypingIndicator(roomId: string, userName: string) {
       clearTimeout(typingTimeoutRef.current);
     }
 
-    // Stop typing after 3 seconds of inactivity
+    // Stop typing after 5 seconds of inactivity
     typingTimeoutRef.current = setTimeout(() => {
       setIsTyping(false);
       updateTypingStatus(false);
-    }, 3000);
+    }, 5000);
   }, [isTyping, updateTypingStatus]);
 
   const stopTyping = useCallback(() => {
@@ -115,19 +126,34 @@ export function useTypingIndicator(roomId: string, userName: string) {
       )
       .subscribe((status) => {
         console.log(`🔌 Typing subscription status: ${status}`);
+        
+        if (status === 'SUBSCRIBED') {
+          console.log('✅ Typing subscription active');
+        } else if (status === 'CLOSED' || status === 'CHANNEL_ERROR') {
+          console.log('❌ Typing subscription failed, will reconnect...');
+          setTimeout(setupTypingSubscription, 3000);
+        }
       });
   }, [roomId, userName, loadTypingUsers]);
 
   useEffect(() => {
-    if (!roomId || !userName) return;
+    if (!roomId || !userName) {
+      console.log('⚠️ Missing roomId or userName for typing');
+      return;
+    }
 
     console.log(`🚀 Setting up typing indicators for room: ${roomId}`);
-
+    
     loadTypingUsers();
     setupTypingSubscription();
 
-    // Clean up old typing indicators every 5 seconds
+    // Clean up old typing indicators every 10 seconds
     cleanupTimeoutRef.current = setInterval(() => {
+      loadTypingUsers();
+    }, 10000);
+
+    // Refresh typing users every 5 seconds
+    refreshRef.current = setInterval(() => {
       loadTypingUsers();
     }, 5000);
 
@@ -145,6 +171,10 @@ export function useTypingIndicator(roomId: string, userName: string) {
 
       if (cleanupTimeoutRef.current) {
         clearInterval(cleanupTimeoutRef.current);
+      }
+
+      if (refreshRef.current) {
+        clearInterval(refreshRef.current);
       }
 
       // Clean up typing status on unmount

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Send, Users, Settings, ArrowLeft, Share, Mic, MicOff, Video, VideoOff, Smile, Search, Bell, BellOff, Phone, PhoneOff, Volume2, VolumeX, Hash, Zap, Clock, MessageCircle, Wifi, WifiOff, RefreshCw, Activity } from 'lucide-react';
+import { Send, Users, Settings, ArrowLeft, Share, Mic, MicOff, Video, VideoOff, Smile, Search, Bell, BellOff, Phone, PhoneOff, Volume2, VolumeX, Hash, Zap, Clock, MessageCircle, Wifi, WifiOff, RefreshCw, Activity, X } from 'lucide-react';
 import { Room, Message } from '../lib/supabase';
 import { useUser } from '../contexts/UserContext';
 import { useRealtimeMessages } from '../hooks/useRealtimeMessages';
@@ -38,7 +38,7 @@ export function ChatRoom({ room, onLeave }: ChatRoomProps) {
 
   const { messages, loading, connectionStatus, sendMessage, refetch } = useRealtimeMessages(room.id);
   const { typingUsers, startTyping, stopTyping } = useTypingIndicator(room.id, userName || '');
-  const { participants, participantCount, refetch: refetchParticipants } = useRoomParticipants(room.id, userName || '');
+  const { participants, participantCount, loading: participantsLoading, refetch: refetchParticipants } = useRoomParticipants(room.id, userName || '');
   const { onlineUsers, connectionStatus: presenceStatus } = usePresence(room.id, userName || '');
   const webRTC = useWebRTC(room.id, userName || '');
 
@@ -77,15 +77,15 @@ export function ChatRoom({ room, onLeave }: ChatRoomProps) {
   // Auto-refresh data every 10 seconds
   useEffect(() => {
     const interval = setInterval(() => {
-      if (connectionStatus === 'disconnected') {
-        console.log('🔄 Connection lost, refreshing...');
+      if (connectionStatus === 'disconnected' || presenceStatus === 'disconnected') {
+        console.log('🔄 Connection issues detected, refreshing...');
         refetch();
         refetchParticipants();
       }
-    }, 10000);
+    }, 15000);
 
     return () => clearInterval(interval);
-  }, [connectionStatus, refetch, refetchParticipants]);
+  }, [connectionStatus, presenceStatus, refetch, refetchParticipants]);
 
   const playNotificationSound = () => {
     if (!soundEnabled) return;
@@ -567,21 +567,30 @@ export function ChatRoom({ room, onLeave }: ChatRoomProps) {
             <div className="flex items-center justify-between mb-2">
               <h3 className="font-semibold text-gray-900 flex items-center gap-2">
                 <Users className="w-5 h-5" />
-                Members ({participantCount})
+                Members ({participantsLoading ? '...' : participantCount})
               </h3>
               <div className="flex items-center gap-1">
                 <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
-                <span className="text-xs text-green-600 font-medium">{onlineParticipants.length} online</span>
+                <span className="text-xs text-green-600 font-medium">
+                  {participantsLoading ? '...' : onlineParticipants.length} online
+                </span>
               </div>
             </div>
             <div className="flex gap-4 text-xs text-gray-500">
-              <span>Active: {onlineParticipants.length}</span>
-              <span>Away: {offlineParticipants.length}</span>
-              <span>Total: {participantCount}</span>
+              <span>Active: {participantsLoading ? '...' : onlineParticipants.length}</span>
+              <span>Away: {participantsLoading ? '...' : offlineParticipants.length}</span>
+              <span>Total: {participantsLoading ? '...' : participantCount}</span>
             </div>
           </div>
           
           <div className="max-h-96 overflow-y-auto">
+            {participantsLoading ? (
+              <div className="p-4 text-center">
+                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-2"></div>
+                <p className="text-sm text-gray-500">Loading members...</p>
+              </div>
+            ) : (
+              <>
             {/* Online Users */}
             {onlineParticipants.length > 0 && (
               <div className="p-4 border-b border-gray-100">
@@ -660,6 +669,8 @@ export function ChatRoom({ room, onLeave }: ChatRoomProps) {
                 </div>
               </div>
             )}
+              </>
+            )}
           </div>
 
           {/* Enhanced Voice/Video Controls */}
@@ -725,7 +736,9 @@ export function ChatRoom({ room, onLeave }: ChatRoomProps) {
               </div>
               <div className="flex justify-between items-center">
                 <span>Total messages:</span>
-                <span className="font-medium text-green-600">{messages.length}</span>
+                <span className="font-medium text-green-600">
+                  {participantsLoading ? '...' : onlineParticipants.length}
+                </span>
               </div>
               <div className="flex justify-between items-center">
                 <span>Room activity:</span>
@@ -746,7 +759,7 @@ export function ChatRoom({ room, onLeave }: ChatRoomProps) {
                 <span>Connection:</span>
                 <div className={`flex items-center gap-1 px-2 py-1 rounded-full ${getConnectionStatusColor()}`}>
                   <Activity className="w-3 h-3" />
-                  <span className="font-medium text-xs">{getConnectionStatusText()}</span>
+                <span>{participantsLoading ? '...' : participantCount} members</span>
                 </div>
               </div>
               <div className="flex justify-between items-center">
